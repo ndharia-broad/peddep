@@ -1,0 +1,1276 @@
+---
+title: "Dependency and Expression Embedding Figures"
+author: "Neekesh Dharia & Guillaume Kugener"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include=FALSE, message=FALSE, warning = FALSE)
+source('setup.R')
+source('load_data.R')
+```
+
+
+# Generated using: `r toupper(version_to_use)`
+
+
+```{r load_needed_datasets}
+# This script uses the following datasets:
+mf <- mf
+gene_dependency <- load_gene_dependency()
+gene_effect <- load_gene_effect()
+gene_expression <- load_gene_expression()
+gene_lrt_table <- load_lrt_table()
+achilles_common_essentials <- load_achilles_common_essentials()
+
+if(!dir.exists('figures')) { dir.create('figures') }
+if(!dir.exists('figures/expression')) { dir.create('figures/expression') }
+if(!dir.exists('figures/dependency')) { dir.create('figures/dependency') }
+```
+
+
+The table below highlights all of the cell lines that are included in the analyses and the types that they are annotated as:
+
+```{r}
+cell_lines_included_table <- rbind(
+  data.frame(name=row.names(gene_dependency), stringsAsFactors = F) %>% mutate(Source='Dependency'),
+  data.frame(name=row.names(gene_expression), stringsAsFactors = F) %>% mutate(Source='Expression')
+) %>% 
+  mutate(value=1) %>% mutate(DepMap_ID=name) %>%
+  spread(., Source, value) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, CCLE_name, Type), by='DepMap_ID') %>%
+  dplyr::select(DepMap_ID, CCLE_name, everything())
+```
+
+```{r include=TRUE} 
+cell_lines_included_table %>% datatable(options=list(scrollX=T))
+```
+
+# Overview
+
+* Embed the pediatric and adult solid and brain tumor cell lines in expression/dependency space
+* Evaluate homogeneity in expression/dependency space
+
+## Expression 2D embedding
+
+### Global all cell line expression 2D embedding {.tabset .tabset-fade}
+
+Only the top 2000 most variable genes were selected to perform the 2D embedding
+
+```{r}
+ordered_by_sd_expr <- apply(gene_expression, 2, sd) %>% .[order(-.)] %>% names()
+
+if (!file.exists('data/expression_tsne_vals.csv') | !file.exists('data/expression_umap_vals.csv'))
+{
+  pca_on_expression_top_2000 <- prcomp(as.matrix(gene_expression[,ordered_by_sd_expr[1:2000]]))$x
+  
+  exp.umap <- umap(pca_on_expression_top_2000[,paste0('PC', 1:50)])
+  res_umap <- exp.umap$layout %>% as.data.frame() %>% mutate(DepMap_ID=row.names(.)) %>%
+    left_join(., mf, by='DepMap_ID') %>%
+    mutate(Group=ifelse(PvA == 'Pediatric', Type, 'Adult'))
+  
+  fast_tsne_on_expression <- fftRtsne(
+    X = as.matrix(gene_expression[,ordered_by_sd_expr[1:2000]]),
+    check_duplicates = FALSE, 
+    max_iter = 3000,
+    perplexity = 25, theta = 0.5,
+    fast_tsne_path = fast_tsne_path
+  )
+  
+  format_fast_tsne_expression_for_plot <- fast_tsne_on_expression %>%
+    as.data.frame() %>%
+    mutate(DepMap_ID=row.names(gene_expression)) %>%
+    left_join(., mf, by='DepMap_ID') %>%
+    mutate(Group=ifelse(PvA == 'Pediatric', Type, 'Adult'))
+  
+  fwrite(format_fast_tsne_expression_for_plot, file='data/expression_tsne_vals.csv')
+  fwrite(res_umap, file='data/expression_umap_vals.csv')
+} else
+{
+  format_fast_tsne_expression_for_plot <- fread('data/expression_tsne_vals.csv')
+  res_umap <- fread('data/expression_umap_vals.csv')
+  
+  format_fast_tsne_expression_for_plot %<>% dplyr::select(V1, V2, DepMap_ID) %>%
+    left_join(., mf, by='DepMap_ID') %>%
+    mutate(Group=ifelse(PvA == 'Pediatric', Type, 'Adult'))
+  
+  res_umap %<>% dplyr::select(V1, V2, DepMap_ID) %>%
+    left_join(., mf, by='DepMap_ID') %>%
+    mutate(Group=ifelse(PvA == 'Pediatric', Type, 'Adult'))
+  
+  fwrite(format_fast_tsne_expression_for_plot, file='data/expression_tsne_vals.csv')
+  fwrite(res_umap, file='data/expression_umap_vals.csv')
+}
+```
+
+#### tSNE
+
+
+```{r fig.height=5, include=TRUE}
+format_fast_tsne_expression_for_plot %<>%
+  mutate(Group=factor(Group, levels=c(names(color_for_subtypes_vector)[order(names(color_for_subtypes_vector))], 'Adult')))
+Group_label <- unique(format_fast_tsne_expression_for_plot %>% 
+                        group_by(Group) %>% 
+                        mutate(n = n()) %>%
+                        mutate(type_label = paste0(Group, " (n=", n,")")) %>%
+                        pull(type_label)
+)
+names(Group_label) <- gsub(" [(].*","",Group_label)
+
+top_2000_most_variable_tsne <- ggplot(format_fast_tsne_expression_for_plot, aes(V1, V2, color=Group, fill=Group, text=CCLE_name)) +
+  geom_point(pch=21, alpha=0.75, size=3, color="white") +
+  xlab('1st tSNE component') + ylab('2nd tSNE component') +
+  ggtitle('tSNE: expression of 2000 most\nvariable genes') +
+  guides(color=F,
+         fill=guide_legend(title='Solid/brain tumor type')) +
+  scale_color_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+  scale_fill_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+  theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank(), 
+                              axis.text = element_blank(), axis.ticks = element_blank())
+
+saveRDS(top_2000_most_variable_tsne, 
+        file = paste0('figures/expression/tsne_cell_line_expression_top_2000_', version_to_use, '.rds'))
+ggsave(top_2000_most_variable_tsne, 
+       filename = paste0('figures/expression/tsne_cell_line_expression_top_2000_', version_to_use, '.pdf'), 
+       height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+
+top_2000_most_variable_tsne
+```
+
+
+#### UMAP
+
+```{r fig.height=5, include=TRUE}
+res_umap %<>%
+  mutate(Group=factor(Group, levels=c(names(color_for_subtypes_vector)[order(names(color_for_subtypes_vector))], 'Adult')))
+Group_label <- unique(res_umap %>% 
+                        group_by(Group) %>% 
+                        mutate(n = n()) %>%
+                        mutate(type_label = paste0(Group, " (n=", n,")")) %>%
+                        pull(type_label)
+)
+names(Group_label) <- gsub(" [(].*","",Group_label)
+
+expression_umap_top2000_pca_50 <- ggplot(res_umap, aes(V1, V2, color=Group, fill=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3, color="white") +
+  xlab('1st UMAP component') + ylab('2nd UMAP component') +
+  ggtitle('UMAP: expression of 2000 most\nvariable genes') +
+  guides(color=F,
+         fill=guide_legend(title='Solid/brain tumor type')) +
+  scale_color_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+  scale_fill_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+  theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank(), axis.text = element_blank(), axis.ticks = element_blank())
+
+saveRDS(expression_umap_top2000_pca_50, 
+        file = paste0('figures/expression/umap_cell_line_expression_top2000_geneset_', version_to_use, '.rds'))
+ggsave(expression_umap_top2000_pca_50, 
+       filename = paste0('figures/expression/umap_cell_line_expression_top2000_geneset_', version_to_use, '.pdf'), 
+       height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+
+expression_umap_top2000_pca_50
+```
+
+
+### Pediatric cell line expression 2D embedding {.tabset .tabset-fade}
+
+Only the top 2000 most variable genes across pediatric cell lines were selected to perform the 2D embedding
+
+```{r}
+pediatric_lines_only_expr <- mf %>% 
+  filter(PvA == "Pediatric") %$% 
+  intersect(DepMap_ID, row.names(gene_expression))
+
+ordered_by_sd_expr_peds_only <- apply(gene_expression[pediatric_lines_only_expr,], 2, sd) %>% .[order(-.)] %>% names()
+
+if (!file.exists('data/expression_peds_tsne_vals.csv') | !file.exists('data/expression_peds_umap_vals.csv'))
+{
+  pca_on_expression_top_2000_pediatric <- prcomp(as.matrix(gene_expression[pediatric_lines_only_expr, ordered_by_sd_expr_peds_only[1:2000]]))$x
+  
+  exp.umap_pediatric <- umap(pca_on_expression_top_2000_pediatric[,paste0('PC', 1:50)])
+  res_umap_pediatric <- exp.umap_pediatric$layout %>% as.data.frame() %>% mutate(DepMap_ID=row.names(.)) %>%
+    left_join(., mf, by='DepMap_ID') %>%
+    mutate(Group=ifelse(PvA == 'Pediatric', Type, 'Adult'))
+  
+  fast_tsne_on_expression_pediatric_only <- fftRtsne(
+    X = as.matrix(gene_expression[pediatric_lines_only_expr, ordered_by_sd_expr_peds_only[1:2000]]),
+    check_duplicates = FALSE, 
+    max_iter = 3000,
+    perplexity = 25, theta = 0.5,
+    fast_tsne_path = fast_tsne_path
+  )
+  
+  format_fast_tsne_expression_for_plot_pediatric <- fast_tsne_on_expression_pediatric_only %>%
+    as.data.frame() %>%
+    mutate(DepMap_ID=row.names(gene_expression[pediatric_lines_only_expr,])) %>%
+    left_join(., mf, by='DepMap_ID') %>%
+    mutate(Group=ifelse(PvA == 'Pediatric', Type, 'Adult'))
+  
+  fwrite(format_fast_tsne_expression_for_plot_pediatric, file='data/expression_peds_tsne_vals.csv')
+  fwrite(res_umap_pediatric, file='data/expression_peds_umap_vals.csv')
+} else
+{
+  format_fast_tsne_expression_for_plot_pediatric <- fread('data/expression_peds_tsne_vals.csv')
+  res_umap_pediatric <- fread('data/expression_peds_umap_vals.csv')
+  
+  format_fast_tsne_expression_for_plot_pediatric %<>% dplyr::select(V1, V2, DepMap_ID) %>%
+    left_join(., mf, by='DepMap_ID') %>%
+    mutate(Group=ifelse(PvA == 'Pediatric', Type, 'Adult'))
+  
+  res_umap_pediatric %<>% dplyr::select(V1, V2, DepMap_ID) %>%
+    left_join(., mf, by='DepMap_ID') %>%
+    mutate(Group=ifelse(PvA == 'Pediatric', Type, 'Adult'))
+  
+  fwrite(format_fast_tsne_expression_for_plot_pediatric, file='data/expression_peds_tsne_vals.csv')
+  fwrite(res_umap_pediatric, file='data/expression_peds_umap_vals.csv')
+}
+```
+
+
+#### tSNE
+
+```{r fig.height=5, include=TRUE}
+format_fast_tsne_expression_for_plot_pediatric %<>%
+  mutate(Group=factor(Group, levels=c(names(color_for_subtypes_vector)[order(names(color_for_subtypes_vector))], 'Adult')))
+Group_label <- unique(format_fast_tsne_expression_for_plot_pediatric %>% 
+                        group_by(Group) %>% 
+                        mutate(n = n()) %>%
+                        mutate(type_label = paste0(Group, " (n=", n,")")) %>%
+                        pull(type_label)
+)
+names(Group_label) <- gsub(" [(].*","",Group_label)
+
+peds_only_tsne <- ggplot(format_fast_tsne_expression_for_plot_pediatric, aes(V1, V2, color=Group, fill=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3, color="white") +
+  xlab('1st tSNE component') + ylab('2nd tSNE component') +
+  ggtitle('tSNE: expression of 2000 most\nvariable genes, pediatric lines only') +
+  guides(color=F,
+         fill=guide_legend(title='Solid/brain tumor type')) +
+  scale_color_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+  scale_fill_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+  theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank(), axis.text = element_blank(), axis.ticks = element_blank())
+
+saveRDS(peds_only_tsne, 
+        file = paste0('figures/expression/tsne_peds_cell_line_expression_top_2000_', version_to_use, '.rds'))
+ggsave(peds_only_tsne, 
+       filename = paste0('figures/expression/tsne_peds_cell_line_expression_top_2000_', version_to_use, '.pdf'), 
+       height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+
+peds_only_tsne
+```
+
+#### tSNE with labels
+
+```{r fig.height=5, include=TRUE}
+peds_only_tsne_labels <- peds_only_tsne + 
+  geom_text_repel(data=format_fast_tsne_expression_for_plot_pediatric, 
+                  aes(label=gsub('_.*', '', CCLE_name)), color='black', size=2)
+
+saveRDS(peds_only_tsne_labels, 
+        file = paste0('figures/expression/tsne_peds_cell_line_expression_top_2000_', version_to_use, '_labels.rds'))
+ggsave(peds_only_tsne_labels, 
+       filename = paste0('figures/expression/tsne_peds_cell_line_expression_top_2000_', version_to_use, '_labels.pdf'), 
+       height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+
+peds_only_tsne_labels
+```
+
+#### UMAP
+
+```{r fig.height=5, include=TRUE}
+res_umap_pediatric %<>%
+  mutate(Group=factor(Group, levels=c(names(color_for_subtypes_vector)[order(names(color_for_subtypes_vector))], 'Adult')))
+Group_label <- unique(res_umap_pediatric %>% 
+                        group_by(Group) %>% 
+                        mutate(n = n()) %>%
+                        mutate(type_label = paste0(Group, " (n=", n,")")) %>%
+                        pull(type_label)
+)
+names(Group_label) <- gsub(" [(].*","",Group_label)
+
+expression_umap_top2000_pca_50_pediatric <- ggplot(res_umap_pediatric, aes(V1, V2, color=Group, fill=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3, color="white") +
+  xlab('1st UMAP component') + ylab('2nd UMAP component') +
+  ggtitle('UMAP: expression of 2000 most\nvariable genes, pediatric only') +
+  guides(color=F,
+         fill=guide_legend(title='Solid/brain tumor type')) +
+  scale_color_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+  scale_fill_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+  theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank(), axis.text = element_blank(), axis.ticks = element_blank())
+
+saveRDS(expression_umap_top2000_pca_50_pediatric, 
+        file = paste0('figures/expression/umap_peds_cell_line_expression_top2000_geneset_', version_to_use, '.rds'))
+ggsave(expression_umap_top2000_pca_50_pediatric, 
+       filename = paste0('figures/expression/umap_peds_cell_line_expression_top2000_geneset_', version_to_use, '.pdf'), 
+       height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+
+expression_umap_top2000_pca_50_pediatric
+```
+
+#### UMAP with labels
+
+```{r fig.height=5, include=TRUE}
+peds_only_umap_labels <- expression_umap_top2000_pca_50_pediatric + 
+  geom_text_repel(data=res_umap_pediatric, 
+                  aes(label=gsub('_.*', '', CCLE_name)), color='black', size=2)
+
+saveRDS(peds_only_umap_labels, 
+        file = paste0('figures/expression/umap_peds_cell_line_expression_top_2000_', version_to_use, '_labels.rds'))
+ggsave(peds_only_umap_labels, 
+       filename = paste0('figures/expression/umap_peds_cell_line_expression_top_2000_', version_to_use, '_labels.pdf'), 
+       height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+
+peds_only_umap_labels
+```
+
+
+
+## Dependency 2D embedding
+
+### Global (all DepMap cell lines) embedding {.tabset .tabset-fade}
+
+```{r}
+current_gene_map <- colnames(gene_dependency) %>% setNames(., gsub('.* ', '', .))
+
+lrt_genes <- gene_lrt_table %>% filter((lrt) > 100, skewed_left) %$%
+  gene
+
+achilles_non_essentials <- colSums(gene_dependency >= 0.5, na.rm = T)
+achilles_non_essentials <- names(achilles_non_essentials[achilles_non_essentials == 0])
+
+lrt_genes_ceres <- lrt_genes
+lrt_genes_ceres <- lrt_genes_ceres[!(lrt_genes_ceres %in% c(achilles_non_essentials, achilles_common_essentials$gene))]
+```
+
+Embedding of cell lines in dependency space only using the selective dependencies (LRT > 100, exclude common essentals, exclude non-essentials, exclude genes with NAs):  
+`r dim(na.exclude(t(as.matrix(gene_effect[,lrt_genes_ceres]))))` genes
+
+
+```{r}
+if (!file.exists('data/dependency_tsne_vals.csv') | !file.exists('data/dependency_umap_vals.csv'))
+{
+  pca_on_dependency_lrt_genes <- prcomp(t(na.exclude(t(as.matrix(gene_effect[,lrt_genes_ceres])))))$x
+  
+  exp.umap.dependency <- umap(pca_on_dependency_lrt_genes[,paste0('PC', 1:50)])
+  res_umap.dependency <- exp.umap.dependency$layout %>% as.data.frame() %>% mutate(DepMap_ID=row.names(.)) %>%
+    left_join(., mf, by='DepMap_ID') %>%
+    mutate(Group=ifelse(PvA == 'Pediatric', Type, 'Adult'))
+  
+  fast_tsne_on_deps <- fftRtsne(
+    X = t(na.exclude(t(as.matrix(gene_effect[,lrt_genes_ceres])))),
+    check_duplicates = FALSE, 
+    max_iter = 3000,
+    perplexity = 25, theta = 0.5,
+    fast_tsne_path = fast_tsne_path
+  )
+  
+  format_fast_tsne_deps_for_plot <- fast_tsne_on_deps %>%
+    as.data.frame() %>%
+    mutate(DepMap_ID=row.names(gene_effect)) %>%
+    left_join(., mf, by='DepMap_ID') %>%
+    mutate(Group=ifelse(PvA == 'Pediatric', Type, 'Adult'))
+  
+  fwrite(format_fast_tsne_deps_for_plot, file='data/dependency_tsne_vals.csv')
+  fwrite(res_umap.dependency, file='data/dependency_umap_vals.csv')
+} else
+{
+  format_fast_tsne_deps_for_plot <- fread('data/dependency_tsne_vals.csv')
+  res_umap.dependency <- fread('data/dependency_umap_vals.csv')
+  
+  format_fast_tsne_deps_for_plot %<>% dplyr::select(V1, V2, DepMap_ID) %>%
+    left_join(., mf, by='DepMap_ID') %>%
+    mutate(Group=ifelse(PvA == 'Pediatric', Type, 'Adult'))
+  
+  res_umap.dependency %<>% dplyr::select(V1, V2, DepMap_ID) %>%
+    left_join(., mf, by='DepMap_ID') %>%
+    mutate(Group=ifelse(PvA == 'Pediatric', Type, 'Adult'))
+  
+  fwrite(format_fast_tsne_deps_for_plot, file='data/dependency_tsne_vals.csv')
+  fwrite(res_umap.dependency, file='data/dependency_umap_vals.csv')
+}
+```
+
+
+#### tSNE
+
+
+```{r fig.height=5, include=TRUE}
+format_fast_tsne_deps_for_plot %<>%
+  mutate(Group=factor(Group, levels=c(names(color_for_subtypes_vector)[order(names(color_for_subtypes_vector))], 'Adult')))
+Group_label <- unique(format_fast_tsne_deps_for_plot %>% 
+                        group_by(Group) %>% 
+                        mutate(n = n()) %>%
+                        mutate(type_label = paste0(Group, " (n=", n,")")) %>%
+                        pull(type_label)
+)
+names(Group_label) <- gsub(" [(].*","",Group_label)
+
+lrt_deps_tsne <- ggplot(format_fast_tsne_deps_for_plot, aes(V1, V2, color=Group, fill=Group, text=CCLE_name)) +
+  geom_point(pch=21, alpha=0.75, size=3, color="white") +
+  xlab('1st tSNE component') + ylab('2nd tSNE component') +
+  ggtitle('tSNE: selective dependencies') +
+  guides(color=F,
+         fill=guide_legend(title='Solid/brain tumor type')) +
+  scale_color_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+  scale_fill_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+  theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank())
+
+saveRDS(lrt_deps_tsne, 
+        file = paste0('figures/dependency/tsne_cell_line_dependency_lrt_', version_to_use, '.rds'))
+ggsave(lrt_deps_tsne, 
+       filename = paste0('figures/dependency/tsne_cell_line_dependency_lrt_', version_to_use, '.pdf'), 
+       height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+
+lrt_deps_tsne
+```
+
+
+#### UMAP
+
+```{r fig.height=5, include=TRUE}
+res_umap.dependency %<>%
+  mutate(Group=factor(Group, levels=c(names(color_for_subtypes_vector)[order(names(color_for_subtypes_vector))], 'Adult')))
+Group_label <- unique(res_umap.dependency %>% 
+                        group_by(Group) %>% 
+                        mutate(n = n()) %>%
+                        mutate(type_label = paste0(Group, " (n=", n,")")) %>%
+                        pull(type_label)
+)
+names(Group_label) <- gsub(" [(].*","",Group_label)
+
+lrt_deps_umap <- ggplot(res_umap.dependency, aes(V1, V2, color=Group, fill=Group, text=CCLE_name)) +
+  geom_point(pch=21, alpha=0.75, size=3, color="white") +
+  xlab('1st UMAP component') + ylab('2nd UMAP component') +
+  ggtitle('UMAP: selective dependencies') +
+  guides(color=F,
+         fill=guide_legend(title='Solid/brain tumor type')) +
+  scale_color_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+  scale_fill_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+  theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank())
+
+saveRDS(lrt_deps_umap, 
+        file = paste0('figures/dependency/umap_cell_line_dependency_lrt_', version_to_use, '.rds'))
+ggsave(lrt_deps_umap, 
+       filename = paste0('figures/dependency/umap_cell_line_dependency_lrt_', version_to_use, '.pdf'), 
+       height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+
+lrt_deps_umap
+```
+
+#### UMAP - color only peds
+
+```{r fig.height=10, fig.width=10, include=TRUE}
+res_umap.dependency %<>%
+  mutate(Group=factor(Group, levels=c(names(color_for_subtypes_vector)[order(names(color_for_subtypes_vector))], 'Adult')))
+Group_label <- unique(res_umap.dependency %>% 
+                        group_by(Group) %>% 
+                        mutate(n = n()) %>%
+                        mutate(type_label = paste0(Group, " (n=", n,")")) %>%
+                        pull(type_label)
+)
+names(Group_label) <- gsub(" [(].*","",Group_label)
+
+lrt_deps_umap <- ggplot(res_umap.dependency %>% filter(PvA == "Pediatric"), aes(V1, V2, color=Group, fill=Group, label=gsub("_.*", "", CCLE_name))) +
+  geom_point(pch=21, alpha=0.75, size=3, color="white") +
+  xlab('1st UMAP component') + ylab('2nd UMAP component') +
+  ggtitle('UMAP: selective dependencies') +
+  guides(color=F,
+         fill=guide_legend(title='Solid/brain tumor type')) +
+  scale_color_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+  scale_fill_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+  theme_Publication() + theme(legend.justification=c(1,1), legend.position=c(1,1), panel.grid = element_blank()) + 
+  geom_text_repel()
+
+saveRDS(lrt_deps_umap, 
+        file = paste0('figures/dependency/umap_zoom_peds_colored_cell_line_dependency_lrt_', version_to_use, '.rds'))
+ggsave(lrt_deps_umap, 
+       filename = paste0('figures/dependency/umap_zoom_peds_cell_line_dependency_lrt_', version_to_use, '.pdf'), 
+       height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+
+lrt_deps_umap
+```
+
+```{r include=TRUE}
+for (typetoplot in unique(res_umap.dependency$Group))
+{
+  if (typetoplot != "Adult")
+  {
+    type_plot <- res_umap.dependency %>% filter(Group == typetoplot)
+    Group_label <- unique(type_plot %>% 
+                            group_by(Group) %>% 
+                            mutate(n = n()) %>%
+                            mutate(type_label = paste0(Group, " (n=", n,")")) %>%
+                            pull(type_label)
+    )
+    names(Group_label) <- gsub(" [(].*","",Group_label)
+    
+    lrt_deps_umap_type <- ggplot(type_plot %>% filter(PvA == "Pediatric"), aes(V1, V2, color=Group, fill=Group, label=gsub("_.*", "", CCLE_name))) +
+      geom_point(pch=21, alpha=0.75, size=3, color="white") +
+      xlab('1st UMAP component') + ylab('2nd UMAP component') +
+      ggtitle('UMAP: selective dependencies') +
+      guides(color=F,
+             fill=guide_legend(title='Solid/brain tumor type')) +
+      scale_color_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+      scale_fill_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+      theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank()) + 
+      geom_text_repel()
+    
+    print(lrt_deps_umap_type)
+    saveRDS(lrt_deps_umap_type, file = paste0('figures/dependency/umap_zoom_peds_colored_cell_line_dependency_lrt_',typetoplot, version_to_use, '.rds'))
+    ggsave(lrt_deps_umap_type, filename = paste0('figures/dependency/umap_zoom_peds_colored_cell_line_dependency_lrt_',typetoplot, version_to_use,'.pdf'),
+           height = 6, width = 8, useDingbats=FALSE)
+  }
+}
+```
+
+#### tSNE - color tumor types
+
+
+```{r fig.height=5, include=TRUE}
+Type_label <- unique(format_fast_tsne_deps_for_plot %>% 
+                       group_by(Type) %>% 
+                       mutate(n = n()) %>%
+                       mutate(type_label = paste0(Type, " (n=", n,")")) %>%
+                       pull(type_label)
+)
+names(Type_label) <- gsub(" [(].*","",Type_label)
+complete_type_colors_pedi_black <- complete_type_colors
+complete_type_colors_pedi_black[] <- "white"
+complete_type_colors_pedi_black[names(complete_type_colors_pedi_black) %in% pediatric_types] <- "black"
+
+lrt_deps_tsne <- ggplot(format_fast_tsne_deps_for_plot, aes(V1, V2, color=Type, fill=Type, text=CCLE_name)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  xlab('1st tSNE component') + ylab('2nd tSNE component') +
+  ggtitle('tSNE: selective dependencies') +
+  guides(color=F,
+         fill=guide_legend(title='Solid/brain tumor type')) +
+  scale_color_manual(values=complete_type_colors_pedi_black, labels = Group_label) +
+  scale_fill_manual(values=complete_type_colors, labels = Group_label) +
+  theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank())
+
+saveRDS(lrt_deps_tsne,
+        file = paste0('figures/dependency/tsne_cell_line_dependency_lrt_', version_to_use, '_all_tumor_types.rds'))
+ggsave(lrt_deps_tsne,
+       filename = paste0('figures/dependency/tsne_cell_line_dependency_lrt_', version_to_use, '_all_tumor_types.pdf'),
+       height = 14, width = 30, units = 'cm', device = 'pdf', useDingbats=FALSE)
+
+lrt_deps_tsne + theme(legend.position = "none")
+```
+
+
+#### UMAP - color tumor types
+
+```{r fig.height=5, include=TRUE}
+Type_label <- unique(res_umap.dependency %>% 
+                       group_by(Type) %>% 
+                       mutate(n = n()) %>%
+                       mutate(type_label = paste0(Type, " (n=", n,")")) %>%
+                       pull(type_label)
+)
+names(Type_label) <- gsub(" [(].*","",Type_label)
+complete_type_colors_pedi_black <- complete_type_colors
+complete_type_colors_pedi_black[] <- "white"
+complete_type_colors_pedi_black[names(complete_type_colors_pedi_black) %in% pediatric_types] <- "black"
+
+lrt_deps_umap <- ggplot(res_umap.dependency, aes(V1, V2, color=Type, fill=Type)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  xlab('1st UMAP component') + ylab('2nd UMAP component') +
+  ggtitle('UMAP: selective dependencies') +
+  guides(color=F,
+         fill=guide_legend(title='Solid/brain tumor type')) +
+  scale_color_manual(values=complete_type_colors_pedi_black, labels = Group_label) +
+  scale_fill_manual(values=complete_type_colors, labels = Group_label) +
+  theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank())
+
+saveRDS(lrt_deps_umap, 
+        file = paste0('figures/dependency/umap_cell_line_dependency_lrt_', version_to_use, '_all_tumor_types.rds'))
+ggsave(lrt_deps_umap, 
+       filename = paste0('figures/dependency/umap_cell_line_dependency_lrt_', version_to_use, '_all_tumor_types.pdf'), 
+       height = 14, width = 30, units = 'cm', device = 'pdf', useDingbats=FALSE)
+
+lrt_deps_umap + theme(legend.position = "none")
+```
+
+### Interactive plot
+
+```{r include=TRUE}
+ggplotly(ggplot(res_umap.dependency, aes(V1, V2, color=Group, fill=Group, text=CCLE_name)) +
+           geom_point(pch=21, alpha=0.75, size=3, color="white") +
+           xlab('1st UMAP component') + ylab('2nd UMAP component') +
+           ggtitle('UMAP: selective dependencies') +
+           guides(color=F,
+                  fill=guide_legend(title='Solid/brain tumor type')) +
+           scale_fill_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+           theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank(), axis.text = element_blank(), axis.ticks = element_blank()))
+```
+
+
+### Pediatric cell line dependency 2D embedding {.tabset .tabset-fade}
+
+All selective dependecies (across pediatric and adult solid/brain tumors) across pediatric cell lines were used to perform the 2D embedding
+
+
+```{r}
+pediatric_lines_only_deps <- mf %>% 
+  filter(PvA == "Pediatric") %$% 
+  intersect(DepMap_ID, row.names(gene_effect))
+
+if (!file.exists('data/dependency_peds_tsne_vals.csv') | !file.exists('data/dependency_peds_umap_vals.csv'))
+{
+  pca_on_dependency_lrt_genes_pediatric <- prcomp(t(na.exclude(t(as.matrix(gene_effect[pediatric_lines_only_deps,lrt_genes_ceres])))))$x
+  
+  exp.umap.dependency_pediatric <- umap(pca_on_dependency_lrt_genes_pediatric[,paste0('PC', 1:50)])
+  res_umap.dependency_pediatric <- exp.umap.dependency_pediatric$layout %>% as.data.frame() %>% mutate(DepMap_ID=row.names(.)) %>%
+    left_join(., mf, by='DepMap_ID') %>%
+    mutate(Group=ifelse(PvA == 'Pediatric', Type, 'Adult'))
+  
+  fast_tsne_on_deps_pediatric <- fftRtsne(
+    X = t(na.exclude(t(as.matrix(gene_effect[pediatric_lines_only_deps,lrt_genes_ceres])))),
+    check_duplicates = FALSE, 
+    max_iter = 3000,
+    perplexity = 25, theta = 0.5,
+    fast_tsne_path = fast_tsne_path
+  )
+  
+  format_fast_tsne_deps_for_plot_pediatric <- fast_tsne_on_deps_pediatric %>%
+    as.data.frame() %>%
+    mutate(DepMap_ID=row.names(gene_effect[pediatric_lines_only_deps,])) %>%
+    left_join(., mf, by='DepMap_ID') %>%
+    mutate(Group=ifelse(PvA == 'Pediatric', Type, 'Adult'))
+  
+  fwrite(format_fast_tsne_deps_for_plot_pediatric, file='data/dependency_peds_tsne_vals.csv')
+  fwrite(res_umap.dependency_pediatric, file='data/dependency_peds_umap_vals.csv')
+} else
+{
+  format_fast_tsne_deps_for_plot_pediatric <- fread('data/dependency_peds_tsne_vals.csv')
+  res_umap.dependency_pediatric <- fread('data/dependency_peds_umap_vals.csv')
+  
+  format_fast_tsne_deps_for_plot_pediatric %<>% dplyr::select(V1, V2, DepMap_ID) %>%
+    left_join(., mf, by='DepMap_ID') %>%
+    mutate(Group=ifelse(PvA == 'Pediatric', Type, 'Adult'))
+  
+  res_umap.dependency_pediatric %<>% dplyr::select(V1, V2, DepMap_ID) %>%
+    left_join(., mf, by='DepMap_ID') %>%
+    mutate(Group=ifelse(PvA == 'Pediatric', Type, 'Adult'))
+  
+  fwrite(format_fast_tsne_deps_for_plot_pediatric, file='data/dependency_peds_tsne_vals.csv')
+  fwrite(res_umap.dependency_pediatric, file='data/dependency_peds_umap_vals.csv')
+}
+```
+
+
+#### tSNE
+
+```{r fig.height=5, include=TRUE}
+format_fast_tsne_deps_for_plot_pediatric %<>%
+  mutate(Group=factor(Group, levels=c(names(color_for_subtypes_vector)[order(names(color_for_subtypes_vector))], 'Adult')))
+Group_label <- unique(format_fast_tsne_deps_for_plot_pediatric %>% 
+                        group_by(Group) %>% 
+                        mutate(n = n()) %>%
+                        mutate(type_label = paste0(Group, " (n=", n,")")) %>%
+                        pull(type_label)
+)
+names(Group_label) <- gsub(" [(].*","",Group_label)
+
+peds_only_tsne <- ggplot(format_fast_tsne_deps_for_plot_pediatric, aes(V1, V2, color=Group, fill=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3, color="white") +
+  xlab('1st tSNE component') + ylab('2nd tSNE component') +
+  ggtitle('tSNE: selective dependencies,\npediatric lines only') +
+  guides(color=F,
+         fill=guide_legend(title='Solid/brain tumor type')) +
+  scale_color_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+  scale_fill_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+  theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank(), axis.text = element_blank(), axis.ticks = element_blank())
+
+saveRDS(peds_only_tsne, 
+        file = paste0('figures/dependency/tsne_peds_cell_line_dependency_lrt_', version_to_use, '.rds'))
+ggsave(peds_only_tsne, 
+       filename = paste0('figures/dependency/tsne_peds_cell_line_dependency_lrt_', version_to_use, '.pdf'), 
+       height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+
+peds_only_tsne
+```
+
+#### tSNE with labels
+
+```{r fig.height=5, include=TRUE}
+peds_only_tsne_labels <- peds_only_tsne + 
+  geom_text_repel(data=format_fast_tsne_deps_for_plot_pediatric, 
+                  aes(label=gsub('_.*', '', CCLE_name)), color='black', size=2)
+
+saveRDS(peds_only_tsne_labels, 
+        file = paste0('figures/dependency/tsne_peds_cell_line_dependency_lrt_', version_to_use, '_labels.rds'))
+ggsave(peds_only_tsne_labels, 
+       filename = paste0('figures/dependency/tsne_peds_cell_line_dependency_lrt_', version_to_use, '_labels.pdf'), 
+       height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+
+peds_only_tsne_labels
+```
+
+#### UMAP
+
+```{r fig.height=5, include=TRUE}
+res_umap.dependency_pediatric %<>%
+  mutate(Group=factor(Group, levels=c(names(color_for_subtypes_vector)[order(names(color_for_subtypes_vector))], 'Adult')))
+Group_label <- unique(res_umap.dependency_pediatric %>% 
+                        group_by(Group) %>% 
+                        mutate(n = n()) %>%
+                        mutate(type_label = paste0(Group, " (n=", n,")")) %>%
+                        pull(type_label)
+)
+names(Group_label) <- gsub(" [(].*","",Group_label)
+
+lrt_deps_umap <- ggplot(res_umap.dependency_pediatric, aes(V1, V2, color=Group, fill=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3, color="white") +
+  xlab('1st UMAP component') + ylab('2nd UMAP component') +
+  ggtitle('UMAP: selective dependencies\npediatric only') +
+  guides(color=F,
+         fill=guide_legend(title='Solid/brain tumor type')) +
+  scale_color_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+  scale_fill_manual(values=c('Adult'='grey', color_for_subtypes_vector), labels = Group_label) +
+  theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank(), axis.text = element_blank(), axis.ticks = element_blank())
+
+saveRDS(lrt_deps_umap, 
+        file = paste0('figures/dependency/umap_peds_cell_line_dependency_lrt_', version_to_use, '.rds'))
+ggsave(lrt_deps_umap, 
+       filename = paste0('figures/dependency/umap_peds_cell_line_dependency_lrt_', version_to_use, '.pdf'), 
+       height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+
+lrt_deps_umap
+```
+
+#### UMAP with labels
+
+```{r fig.height=10, fig.width=10, include=TRUE}
+peds_only_umap_labels <- lrt_deps_umap + 
+  geom_text_repel(data=res_umap.dependency_pediatric, 
+                  aes(label=gsub('_.*', '', CCLE_name)), color='black', size=2)
+
+saveRDS(peds_only_umap_labels, 
+        file = paste0('figures/dependency/umap_peds_cell_line_dependency_lrt_', version_to_use, '_labels.rds'))
+ggsave(peds_only_umap_labels, 
+       filename = paste0('figures/dependency/umap_peds_cell_line_dependency_lrt_', version_to_use, '_labels.pdf'), 
+       height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+
+peds_only_umap_labels
+```
+
+
+## Measuring cell line similarity
+
+Here we generate similarity scores between cell lines and then assess the similarity scores. 
+
+* Correlation: calculate the pairwise correlation for all cell lines across the top 2000 or 500 most variable genes (expression or dependency, respectively).
+
+* Repeated k-means: repeated k-means approach and repeatedly cluster cell lines using kmeans. The similiarity score is the fraction of times that two cell lines cluster with one another. 
+
+* Distance to cluster center in post PCA: run PCA on expression or dependency space and then select the number of PCs that explain the most variabce using the elbow method. For each lineage, set the center of the lineage cluster to be the median of each of the PCs for cell lines in that lineage. Then calculate the average distance of each cell line to the center and plot.
+
+Only tumor types that have >= 3 cell lines are included in this analysis. The black dashed line indicates the median similarity with cell lines not within that tumor type.
+
+
+```{r}
+# Specific for pediatric vs adult plotting
+plot_similarity_matrix_box_plot <- function(similarity_matrix, title='', y_label='Within tumor type similarity') {
+  # Box plot pediatric vs. all correlations
+  similarity_matrix[lower.tri(similarity_matrix, diag = TRUE)] <- NA
+  similarity_matrix %<>% as.data.frame() %>% mutate(CL1=row.names(.)) %>%
+    gather(CL2, value, -CL1) %>%
+    filter(!is.na(value)) %>%
+    left_join(., mf %>% dplyr::select(CL1=DepMap_ID, Type1=Type), by='CL1') %>%
+    left_join(., mf %>% dplyr::select(CL2=DepMap_ID, Type2=Type), by='CL2') %>%
+    mutate(`Same lineage`=Type1==Type2) %>%
+    mutate(Group=ifelse(`Same lineage` & Type1 %in% names(color_for_subtypes_vector), Type1, ifelse(`Same lineage`, 'Adult', 'Adult')))
+  
+  count_n <- similarity_matrix %>% dplyr::select(CL1, Type1) %>%
+    unique() %>%
+    group_by(Type1) %>%
+    mutate(n = n()) %>% 
+    mutate(label = paste0(Type1,' (n=',n,')')) %>%
+    ungroup()
+  
+  similarity_matrix %<>% left_join(., count_n %>% dplyr::select(CL1, label), by='CL1')
+  
+  # Order by median
+  ordered_by_median <- similarity_matrix %>%
+    filter(`Same lineage`) %>%
+    group_by(Type1) %>%
+    dplyr::summarise(median=median(value)) %>%
+    arrange(median) %$% Type1
+  
+  similarity_matrix %<>% mutate(Type1=factor(Type1, levels=ordered_by_median)) %>%
+    filter(!is.na(Type1))
+  
+  # Add a line indicating the median correlation with random other lineages
+  average_out_of_lineage <- similarity_matrix %>% filter(!`Same lineage`, !is.na(Type1), !is.na(Type2)) %>%
+    group_by(Type1) %>%
+    dplyr::summarise(median=median(value)) %>%
+    mutate(Group='Adult') %>%
+    mutate(Type1=factor(Type1, levels=ordered_by_median))
+  
+  plot <- ggplot(similarity_matrix %>% filter(`Same lineage`), aes(Type1, value, fill=Group, color=Group)) +
+    geom_point(position = position_jitterdodge(), pch=21, alpha=0.75, size=3) +
+    geom_boxplot(color='black', outlier.color='transparent') +
+    geom_line(data=average_out_of_lineage, aes(as.integer(Type1), median), color='black', linetype=2) +
+    ggtitle(title) +
+    xlab('') + ylab(y_label) +
+    guides(color=FALSE) +
+    scale_color_manual(values=c('Adult'='grey', 'Adult'='white', color_for_subtypes_vector)) +
+    scale_fill_manual(values=c('Adult'='grey', 'Adult'='white', color_for_subtypes_vector), breaks=c('Adult', names(color_for_subtypes_vector))) +
+    theme_bw() +
+    scale_x_discrete(labels=setNames(unique(similarity_matrix$label), unique(similarity_matrix$Type1))) +
+    theme_Publication() +
+    theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none', 
+          panel.border = element_blank(), panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+  
+  return(list(p=plot, s_m=similarity_matrix))
+}
+```
+
+```{r}
+# Keep only lineages that have >=3 cell lines
+expr_cls_to_use <- mf %>% filter(DepMap_ID %in% row.names(gene_expression)) %>% group_by(Type) %>% mutate(total=n()) %>%
+  filter(total >= 3) %$% DepMap_ID
+
+dep_cls_to_use <- mf %>% filter(DepMap_ID %in% row.names(gene_effect)) %>% group_by(Type) %>% mutate(total=n()) %>%
+  filter(total >= 3) %$% DepMap_ID
+```
+
+#### Correlations
+
+```{r}
+expr_cor <- cor(t(gene_expression[expr_cls_to_use,ordered_by_sd_expr[1:2000]]), method='pearson')
+```
+
+```{r include=TRUE}
+expr_lineage_similarity <- plot_similarity_matrix_box_plot(expr_cor, 
+                                                           title='Expression correlation\n(2000 most variable)')$p + 
+  theme(legend.position = 'none')
+
+saveRDS(expr_lineage_similarity, file = paste0('figures/expression/expr_lineage_similarity_top_2000_', version_to_use, '.rds'))
+ggsave(expr_lineage_similarity, filename = paste0('figures/expression/expr_lineage_similarity_top_2000_', version_to_use, '.pdf'), 
+       width = 20, height=14, units='cm', device='pdf', useDingbats=FALSE)
+
+expr_lineage_similarity
+```
+
+```{r}
+dep_cor <- cor(t(gene_effect[dep_cls_to_use,lrt_genes_ceres]), method='pearson')
+```
+
+```{r include=TRUE}
+dep_lineage_similarity <- plot_similarity_matrix_box_plot(similarity_matrix = dep_cor, 
+                                                          title='Dependency correlation\n(selective dependencies)')$p + 
+  theme(legend.position = 'none')
+
+saveRDS(dep_lineage_similarity, file = paste0('figures/dependency/dep_lineage_similarity_lrt_', version_to_use, '.rds'))
+ggsave(dep_lineage_similarity, filename = paste0('figures/dependency/dep_lineage_similarity_lrt_', version_to_use, '.pdf'), 
+       width = 20, height=14, units='cm', device='pdf', useDingbats=FALSE)
+
+dep_lineage_similarity
+```
+
+```{r}
+non_na_genes <- apply(gene_effect, 2, FUN = function(x) length(x[is.na(x)])) %>% .[.==0] %>% names()
+dep_genes <- apply(gene_effect[,non_na_genes], 2, sd) %>% .[order(-.)] %>% names()
+
+# Top 500 most variable... 
+dep_cor <- cor(t(gene_effect[dep_cls_to_use,dep_genes[1:500]]), method='pearson')
+```
+
+```{r include=TRUE}
+dep_lineage_similarity <- plot_similarity_matrix_box_plot(similarity_matrix = dep_cor, title='Dependency correlation\n(500 most variable)')$p + theme(legend.position = 'none')
+
+saveRDS(dep_lineage_similarity, file = paste0('figures/dependency/dep_lineage_similarity_top_500_', version_to_use, '.rds'))
+ggsave(dep_lineage_similarity, filename = paste0('figures/dependency/dep_lineage_similarity_top_500_', version_to_use, '.pdf'), 
+       width = 20, height=14, units='cm', device='pdf', useDingbats=FALSE)
+
+dep_lineage_similarity
+```
+
+
+#### Repeated kmeans
+
+```{r}
+if (!file.exists('data/expression_similarity_repeated_kmeans.csv'))
+{
+  expression_repeated_kmeans <- repeated_k_means(
+    ds = as.matrix(gene_expression[expr_cls_to_use,ordered_by_sd_expr[1:2000]]),
+    pca = TRUE, iterations = 1000, num_pcs = 200, n_clusters = 100
+  )
+  
+  fwrite(expression_repeated_kmeans, file='data/expression_similarity_repeated_kmeans.csv')
+} else
+{
+  expression_repeated_kmeans <- fread('data/expression_similarity_repeated_kmeans.csv')
+  expression_repeated_kmeans %<>% as.matrix(.)
+  rownames(expression_repeated_kmeans) <- colnames(expression_repeated_kmeans)
+}
+```
+
+
+```{r include=TRUE}
+plot_similarity_matrix_box_plot(similarity_matrix = expression_repeated_kmeans, 
+                                title='Expression repeated-k-means\n(2000 most variable)')$p + 
+  theme(legend.position = 'none')
+```
+
+
+```{r}
+if (!file.exists('data/dependency_lrt_similarity_repeated_kmeans.csv'))
+{
+  dep_kmeans_similarity_matrix <- repeated_k_means(
+    ds = as.matrix(gene_effect[dep_cls_to_use,lrt_genes_ceres[lrt_genes_ceres %in% non_na_genes]]),
+    pca = FALSE, iterations = 1000, num_pcs = 200, n_clusters = 100, plus_minus = 0
+  )
+  
+  fwrite(dep_kmeans_similarity_matrix, file='data/dependency_lrt_similarity_repeated_kmeans.csv')
+} else
+{
+  dep_kmeans_similarity_matrix <- fread('data/dependency_lrt_similarity_repeated_kmeans.csv')
+  dep_kmeans_similarity_matrix %<>% as.matrix(.)
+  rownames(dep_kmeans_similarity_matrix) <- colnames(dep_kmeans_similarity_matrix)
+}
+```
+
+```{r include=TRUE}
+plot_similarity_matrix_box_plot(similarity_matrix = dep_kmeans_similarity_matrix, 
+                                title='Dependency repeated-k-means\n(selective dependencies)')$p + 
+  theme(legend.position = 'none')
+```
+
+
+```{r}
+if (!file.exists('data/dependency_top500_similarity_repeated_kmeans.csv'))
+{
+  dep_kmeans_similarity_matrix <- repeated_k_means(
+    ds = as.matrix(gene_effect[dep_cls_to_use,dep_genes[1:500]]),
+    pca = FALSE, iterations = 1000, num_pcs = 200, n_clusters = 100, plus_minus = 0
+  )
+  
+  fwrite(dep_kmeans_similarity_matrix, file='data/dependency_top500_similarity_repeated_kmeans.csv')
+} else
+{
+  dep_kmeans_similarity_matrix <- fread('data/dependency_top500_similarity_repeated_kmeans.csv')
+  dep_kmeans_similarity_matrix %<>% as.matrix(.)
+  rownames(dep_kmeans_similarity_matrix) <- colnames(dep_kmeans_similarity_matrix)
+}
+```
+
+```{r include=TRUE}
+plot_similarity_matrix_box_plot(similarity_matrix = dep_kmeans_similarity_matrix, 
+                                title='Dependency repeated-k-means\n(500 most variable)')$p + 
+  theme(legend.position = 'none')
+```
+
+
+
+#### Distance to center in PCA
+
+##### Expression
+
+On the top 2000 most variable genes.
+
+```{r include=T}
+# Run PCA on expression/dep space
+pca_expression <- prcomp(gene_expression[expr_cls_to_use,ordered_by_sd_expr[1:2000]])
+expression_eigen <- pca_expression$sdev^2
+expression_var <- expression_eigen*100/sum(expression_eigen)
+cumulative_var <- cumsum(expression_var)
+
+ggplot(data.frame(PC=seq(1, length(cumulative_var)), cumulative_var=cumulative_var, expression_var=expression_var) %>% filter(PC <= 10), 
+       aes(PC, expression_var)) +
+  geom_point() +
+  geom_line() +
+  ylab('Expression variance (2000 most variable)') + 
+  theme_Publication()
+```
+
+```{r}
+# Based on the above plot
+num_pcs <- 3
+
+expression_pcs_dist_to_center <- pca_expression$x[,paste0('PC', seq(1,num_pcs))] %>%
+  as.data.frame() %>%
+  mutate(DepMap_ID=row.names(.)) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type, PvA), by='DepMap_ID') %>%
+  group_by(Type) %>%
+  mutate(in_group=n()) %>%
+  filter(in_group >= 3) %>%
+  ungroup() %>%
+  gather(Comp, value, -DepMap_ID, -Type, -PvA, -in_group) %>%
+  group_by(Type, Comp) %>%
+  mutate(med=median(value)) %>%
+  group_by(Type, Comp, DepMap_ID) %>%
+  mutate(squared_val=(value-med)^2) %>%
+  ungroup() %>%
+  group_by(Type, DepMap_ID, PvA) %>%
+  dplyr::summarise(dist_to_center=sqrt(sum(squared_val))) %>%
+  mutate(Group=ifelse(PvA=='Pediatric', Type, 'Adult')) %>%
+  ungroup() %>% 
+  arrange(DepMap_ID) %>%
+  group_by(Type) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(Type,' (n=',n,')')) %>%
+  ungroup()
+
+# Plot results (box plot)
+order_types_tightness_pca_expr <- expression_pcs_dist_to_center %>%
+  group_by(Type) %>%
+  dplyr::summarise(med=median(dist_to_center)) %>%
+  arrange(med) %$% Type
+```
+
+```{r include=TRUE}
+plot_expression_pcs_dist_to_center <- ggplot(expression_pcs_dist_to_center %>% 
+                                               mutate(Type=factor(Type, levels=order_types_tightness_pca_expr)), 
+                                             aes(Type, dist_to_center, color=Group, fill=Group)) +
+  geom_point(position=position_jitterdodge(), pch=21, alpha=0.75, size=3) +
+  geom_boxplot(outlier.color = 'transparent', color='black') +
+  scale_fill_manual(values=c('Adult'='grey', color_for_subtypes_vector)) +
+  scale_color_manual(values=c('Adult'='grey', color_for_subtypes_vector)) +
+  xlab('') + ylab('Distance') +
+  ggtitle(paste0('Distance to center in expression (', num_pcs,' PCs)')) +
+  theme_bw() +
+  scale_x_discrete(labels=setNames(unique(expression_pcs_dist_to_center$label), unique(expression_pcs_dist_to_center$Type))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none', 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+saveRDS(plot_expression_pcs_dist_to_center, file = paste0('figures/expression/expression_pcs_dist_to_center_top2000_', version_to_use, '.rds'))
+ggsave(plot_expression_pcs_dist_to_center, filename = paste0('figures/expression/expression_pcs_dist_to_center_top2000_', version_to_use, '.pdf'), 
+       device = 'pdf', width = 20, height = 14, units='cm', useDingbats=FALSE)
+
+plot_expression_pcs_dist_to_center
+```
+
+##### Dependency {.tabset .tabset-fade}
+
+###### LRT genes only
+
+```{r include=T}
+# Run PCA on expression/dep space
+pca_dependency <- prcomp(na.exclude(gene_effect[dep_cls_to_use,lrt_genes_ceres]))
+dependency_eigen <- pca_dependency$sdev^2
+dependency_var <- dependency_eigen*100/sum(dependency_eigen)
+dep_cumulative_var <- cumsum(dependency_var)
+
+ggplot(data.frame(PC=seq(1, length(dep_cumulative_var)), dep_cumulative_var=dep_cumulative_var, dependency_var=dependency_var) %>% filter(PC <= 20), 
+       aes(PC, dependency_var)) +
+  geom_point() +
+  geom_line() +
+  ylab('Dependency variance (LRT genes)') + 
+  theme_Publication()
+
+# Based on the above plot
+num_pcs_dep <- 6
+
+dep_pcs_dist_to_center <- pca_dependency$x[,paste0('PC', seq(1,num_pcs_dep))] %>%
+  as.data.frame() %>%
+  mutate(DepMap_ID=row.names(.)) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type, PvA), by='DepMap_ID') %>%
+  group_by(Type) %>%
+  mutate(in_group=n()) %>%
+  filter(in_group >= 3) %>%
+  ungroup() %>%
+  gather(Comp, value, -DepMap_ID, -Type, -PvA, -in_group) %>%
+  group_by(Type, Comp) %>%
+  mutate(med=median(value)) %>%
+  group_by(Type, Comp, DepMap_ID) %>%
+  mutate(squared_val=(value-med)^2) %>%
+  ungroup() %>%
+  group_by(Type, DepMap_ID, PvA) %>%
+  dplyr::summarise(dist_to_center=sqrt(sum(squared_val))) %>%
+  mutate(Group=ifelse(PvA=='Pediatric', Type, 'Adult')) %>%
+  ungroup() %>%
+  group_by(Type) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(Type,' (n=',n,')')) %>%
+  ungroup()
+
+# Plot results (box plot)
+order_types_tightness_pca_dep <- dep_pcs_dist_to_center %>%
+  group_by(Type) %>%
+  dplyr::summarise(med=median(dist_to_center)) %>%
+  arrange(med) %$% Type
+```
+
+
+```{r include=TRUE}
+plot_dep_pcs_dist_to_center_lrt <- ggplot(dep_pcs_dist_to_center %>% 
+                                            mutate(Type=factor(Type, levels=order_types_tightness_pca_dep)), 
+                                          aes(Type, dist_to_center, color=Group, fill=Group)) +
+  geom_point(position=position_jitterdodge(), pch=21, alpha=0.75, size=3) +
+  geom_boxplot(outlier.color = 'transparent', color='black') +
+  scale_fill_manual(values=c('Adult'='grey', color_for_subtypes_vector)) +
+  scale_color_manual(values=c('Adult'='grey', color_for_subtypes_vector)) +
+  xlab('') + ylab('Distance') +
+  ggtitle(paste0('Distance to center in dependency (', num_pcs_dep,' PCs)\n(selective dependencies)')) +
+  theme_bw() +
+  scale_x_discrete(labels=setNames(unique(dep_pcs_dist_to_center$label), unique(dep_pcs_dist_to_center$Type))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none', 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+saveRDS(plot_dep_pcs_dist_to_center_lrt, file = paste0('figures/dependency/dep_pcs_dist_to_center_lrt_', version_to_use, '.rds'))
+ggsave(plot_dep_pcs_dist_to_center_lrt, filename = paste0('figures/dependency/dep_pcs_dist_to_center_lrt_', version_to_use, '.pdf'), 
+       device = 'pdf', width = 20, height = 14, units='cm', useDingbats=FALSE)
+
+plot_dep_pcs_dist_to_center_lrt
+```
+
+
+```{r}
+# Distance to center in dependency vs. expression
+distance_to_center_combined <- inner_join(
+  dep_pcs_dist_to_center %>% dplyr::select(Type, DepMap_ID, PvA, dependency=dist_to_center, Group),
+  expression_pcs_dist_to_center %>% dplyr::select(Type, DepMap_ID, PvA, expression=dist_to_center, Group),
+  by=c('Type', 'DepMap_ID', 'PvA', 'Group')
+)
+```
+
+Below, we plot the median distance from the cluster center in expression and dependency and then fit a line using the geom_smooth function.
+
+```{r include=TRUE}
+ggplot(distance_to_center_combined %>% 
+         group_by(Type, Group) %>% 
+         dplyr::summarise(
+           dependency=median(dependency), 
+           expression=median(expression)
+         ), 
+       aes(dependency, expression, color=Group)) +
+  geom_point() +
+  geom_smooth(formula = 'y ~ x', method='lm', color='black', se=FALSE, linetype=2) +
+  geom_text_repel(aes(label=Type), color='black', size=2) +
+  scale_color_manual(values=c('Adult'='grey', color_for_subtypes_vector)) +
+  xlab('Dependency') + ylab('Expression') + ggtitle('Median distance to PC cluster center by tumor type') +
+  theme_Publication() +
+  theme(legend.position='none')
+```
+
+###### Top 500 genes only
+
+```{r include=T}
+# Run PCA on expression/dep space
+pca_dependency <- prcomp(gene_effect[dep_cls_to_use,dep_genes[1:500]])
+dependency_eigen <- pca_dependency$sdev^2
+dependency_var <- dependency_eigen*100/sum(dependency_eigen)
+dep_cumulative_var <- cumsum(dependency_var)
+
+ggplot(data.frame(PC=seq(1, length(dep_cumulative_var)), dep_cumulative_var=dep_cumulative_var, dependency_var=dependency_var) %>% filter(PC <= 20), 
+       aes(PC, dependency_var)) +
+  geom_point() +
+  geom_line() +
+  theme_Publication()
+
+# Based on the above plot
+num_pcs_dep <- 5
+
+dep_pcs_dist_to_center <- pca_dependency$x[,paste0('PC', seq(1,num_pcs_dep))] %>%
+  as.data.frame() %>%
+  mutate(DepMap_ID=row.names(.)) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type, PvA), by='DepMap_ID') %>%
+  group_by(Type) %>%
+  mutate(in_group=n()) %>%
+  filter(in_group >= 3) %>%
+  ungroup() %>%
+  gather(Comp, value, -DepMap_ID, -Type, -PvA, -in_group) %>%
+  group_by(Type, Comp) %>%
+  mutate(med=median(value)) %>%
+  group_by(Type, Comp, DepMap_ID) %>%
+  mutate(squared_val=(value-med)^2) %>%
+  ungroup() %>%
+  group_by(Type, DepMap_ID, PvA) %>%
+  dplyr::summarise(dist_to_center=sqrt(sum(squared_val))) %>%
+  mutate(Group=ifelse(PvA=='Pediatric', Type, 'Adult')) %>%
+  ungroup() %>%
+  group_by(Type) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(Type,' (n=',n,')')) %>%
+  ungroup()
+
+# Plot results (box plot)
+order_types_tightness_pca_dep <- dep_pcs_dist_to_center %>%
+  group_by(Type) %>%
+  dplyr::summarise(med=median(dist_to_center)) %>%
+  arrange(med) %$% Type
+```
+
+```{r include=TRUE}
+plot_dep_pcs_dist_to_center_top500 <- ggplot(dep_pcs_dist_to_center %>% 
+                                               mutate(Type=factor(Type, levels=order_types_tightness_pca_dep)), 
+                                             aes(Type, dist_to_center, color=Group, fill=Group)) +
+  geom_point(position=position_jitterdodge(), pch=21, alpha=0.75, size=3) +
+  geom_boxplot(outlier.color = 'transparent', color='black') +
+  scale_fill_manual(values=c('Adult'='grey', color_for_subtypes_vector)) +
+  scale_color_manual(values=c('Adult'='grey', color_for_subtypes_vector)) +
+  xlab('') + ylab('Distance') +
+  ggtitle(paste0('Distance to center in dependency (', num_pcs_dep,' PCs)\n(500 most variable)')) +
+  theme_bw() +
+  scale_x_discrete(labels=setNames(unique(dep_pcs_dist_to_center$label), unique(dep_pcs_dist_to_center$Type))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none', 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+saveRDS(plot_dep_pcs_dist_to_center_top500, file = paste0('figures/dependency/dep_pcs_dist_to_center_top500_', version_to_use, '.rds'))
+ggsave(plot_dep_pcs_dist_to_center_top500, filename = paste0('figures/dependency/dep_pcs_dist_to_center_top500_', version_to_use, '.pdf'), 
+       device = 'pdf', width = 20, height = 14, units='cm', useDingbats=FALSE)
+
+plot_dep_pcs_dist_to_center_top500
+```
+
+
+```{r}
+# Distance to center in dependency vs. expression
+distance_to_center_combined <- inner_join(
+  dep_pcs_dist_to_center %>% dplyr::select(Type, DepMap_ID, PvA, dependency=dist_to_center, Group),
+  expression_pcs_dist_to_center %>% dplyr::select(Type, DepMap_ID, PvA, expression=dist_to_center, Group),
+  by=c('Type', 'DepMap_ID', 'PvA', 'Group')
+)
+```
+
+Below, we plot the median distance from the cluster center in expression and dependency and then fit a line using the geom_smooth function.
+
+```{r include=TRUE}
+expr_clus_v_dep_clus <- ggplot(distance_to_center_combined %>% 
+                                 group_by(Type, Group) %>% 
+                                 dplyr::summarise(
+                                   dependency=median(dependency), 
+                                   expression=median(expression)
+                                 ), 
+                               aes(dependency, expression)) +
+  geom_point(pch=21, alpha=0.75, size=3, aes(color=Group, fill=Group)) +
+  geom_smooth(formula = 'y ~ x', method='lm', color='black', se=FALSE, linetype=2) +
+  geom_text_repel(aes(label=Type), color='black', size=2) +
+  scale_color_manual(values=c('Adult'='grey', color_for_subtypes_vector)) +
+  scale_fill_manual(values=c('Adult'='grey', color_for_subtypes_vector)) +
+  xlab('Dependency') + ylab('Expression') + ggtitle('Median distance to PC cluster center by tumor type') +
+  theme_bw() +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none', 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+saveRDS(expr_clus_v_dep_clus, file = paste0('figures/dependency/expr_clus_v_dep_clus_dep500_expr_2000_', version_to_use, '.rds'))
+ggsave(expr_clus_v_dep_clus, filename = paste0('figures/dependency/expr_clus_v_dep_clus_dep500_expr_2000_', version_to_use, '.pdf'), 
+       device = 'pdf', width = 15, height = 14, units = 'cm', useDingbats=FALSE)
+
+expr_clus_v_dep_clus 
+```
+
+
+
+## Session Info
+
+```{r session_info, include=TRUE, echo=TRUE, results='markup'}
+devtools::session_info()
+```
+
+```{r include=TRUE}
+as.data.frame(`Dataset Used`) %>% datatable(options=list(scrollX=T))
+```
+

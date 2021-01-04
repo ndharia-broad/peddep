@@ -1,0 +1,577 @@
+---
+title: "Compare MCL1 Across Screens Figures"
+author: "Neekesh Dharia & Guillaume Kugener"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include=FALSE, message=FALSE, warning = FALSE)
+source('setup.R')
+source('load_data.R')
+```
+
+
+# Generated using: `r toupper(version_to_use)`
+
+
+```{r load_needed_datasets}
+# This script uses the following datasets:
+mf <- mf
+gene_dependency <- load_gene_dependency()
+gene_effect <- load_gene_effect()
+gene_expression <- load_gene_expression()
+gene_lrt_table <- load_lrt_table()
+achilles_common_essentials <- load_achilles_common_essentials()
+
+if(!dir.exists('figures')) { dir.create('figures') }
+if(!dir.exists('figures/mcl1_compare')) { dir.create('figures/mcl1_compare') }
+```
+
+```{r}
+load_sanger_gene_effect <- function(){
+  if(!file.exists("data/sanger_gene_effect.csv")) # If file does not exist, download from FigShare. Otherwise load local file.
+  {
+    sanger_gene_effect <- fread("https://ndownloader.figshare.com/files/16623881")
+    fwrite(sanger_gene_effect, "data/sanger_gene_effect.csv")
+  } else
+  {
+    sanger_gene_effect <- fread("data/sanger_gene_effect.csv")
+  }
+  # Reformat as a matrix.
+  sanger_gene_effect %<>% dplyr::filter(V1 %in% mf$DepMap_ID)
+  rownames_temp <- sanger_gene_effect$V1
+  sanger_gene_effect <- as.matrix(sanger_gene_effect[,-1])
+  rownames(sanger_gene_effect) <- rownames_temp
+  return(sanger_gene_effect)
+}
+
+load_demeter_gene_effect <- function(){
+  if(!file.exists("data/demeter_gene_effect.csv")) # If file does not exist, download from FigShare. Otherwise load local file.
+  {
+    demeter_gene_effect <- fread("https://ndownloader.figshare.com/files/13515395")
+    fwrite(demeter_gene_effect, "data/demeter_gene_effect.csv")
+  } else
+  {
+    demeter_gene_effect <- fread("data/demeter_gene_effect.csv")
+  }
+  # Reformat as a matrix.
+  rownames_temp <- demeter_gene_effect$V1
+  demeter_gene_effect <- as.matrix(demeter_gene_effect[,-1])
+  rownames(demeter_gene_effect) <- rownames_temp
+  demeter_gene_effect <- t(demeter_gene_effect)
+  demeter_gene_effect <- demeter_gene_effect[rownames(demeter_gene_effect) %in% mf$CCLE_name,]
+  ccle_to_depmap <- mf %>% select(DepMap_ID, CCLE_name)
+  rownames(ccle_to_depmap) <- ccle_to_depmap$CCLE_name
+  rownames(demeter_gene_effect) <- ccle_to_depmap[rownames(demeter_gene_effect), "DepMap_ID"]
+  return(demeter_gene_effect)
+}
+
+load_demeter_drive_gene_effect <- function(){
+  if(!file.exists("data/demeter_drive_gene_effect.csv")) # If file does not exist, download from FigShare. Otherwise load local file.
+  {
+    demeter_drive_gene_effect <- fread("https://ndownloader.figshare.com/files/11489693")
+    fwrite(demeter_drive_gene_effect, "data/demeter_drive_gene_effect.csv")
+  } else
+  {
+    demeter_drive_gene_effect <- fread("data/demeter_drive_gene_effect.csv")
+  }
+  # Reformat as a matrix.
+  rownames_temp <- demeter_drive_gene_effect$V1
+  demeter_drive_gene_effect <- as.matrix(demeter_drive_gene_effect[,-1])
+  rownames(demeter_drive_gene_effect) <- rownames_temp
+  demeter_drive_gene_effect <- t(demeter_drive_gene_effect)
+  demeter_drive_gene_effect <- demeter_drive_gene_effect[rownames(demeter_drive_gene_effect) %in% mf$CCLE_name,]
+  ccle_to_depmap <- mf %>% select(DepMap_ID, CCLE_name)
+  rownames(ccle_to_depmap) <- ccle_to_depmap$CCLE_name
+  rownames(demeter_drive_gene_effect) <- ccle_to_depmap[rownames(demeter_drive_gene_effect), "DepMap_ID"]
+  return(demeter_drive_gene_effect)
+}
+
+load_sanger_dose_response <- function(){
+  if(!file.exists("data/sanger_dose_response.csv")) # If file does not exist, download from FigShare. Otherwise load local file.
+  {
+    sanger_dose_response <- fread("https://depmap.org/portal/download/api/download/external?file_name=processed_portal_downloads%2Fgdsc-drug-set-export-658c.5%2Fsanger-dose-response.csv")
+    fwrite(sanger_dose_response, "data/sanger_dose_response.csv")
+  } else
+  {
+    sanger_dose_response <- fread("data/sanger_dose_response.csv")
+  }
+  # Reformat as a matrix.
+  sanger_dose_response %<>% dplyr::filter(V1 %in% mf$DepMap_ID)
+  rownames_temp <- sanger_dose_response$V1
+  sanger_dose_response <- as.matrix(sanger_dose_response[,-1])
+  rownames(sanger_dose_response) <- rownames_temp
+  return(sanger_dose_response)
+}
+
+load_sanger_dose_response <- function(){
+  if(!file.exists("data/sanger_dose_response.csv")) # If file does not exist, download from FigShare. Otherwise load local file.
+  {
+    sanger_dose_response <- fread("https://depmap.org/portal/download/api/download/external?file_name=processed_portal_downloads%2Fgdsc-drug-set-export-658c.5%2Fsanger-dose-response.csv")
+    fwrite(sanger_dose_response, "data/sanger_dose_response.csv")
+  } else
+  {
+    sanger_dose_response <- fread("data/sanger_dose_response.csv")
+  }
+  sanger_dose_response %<>% dplyr::filter(ARXSPAN_ID %in% mf$DepMap_ID)
+  return(sanger_dose_response)
+}
+
+load_prism_secondary_response <- function(){
+  if(!file.exists("data/prism_secondary_response.csv")) # If file does not exist, download from FigShare. Otherwise load local file.
+  {
+    prism_secondary_response <- fread("https://ndownloader.figshare.com/files/20237739")
+    fwrite(prism_secondary_response, "data/prism_secondary_response.csv")
+  } else
+  {
+    prism_secondary_response <- fread("data/prism_secondary_response.csv")
+  }
+  prism_secondary_response %<>% dplyr::filter(depmap_id %in% mf$DepMap_ID)
+  return(prism_secondary_response)
+}
+
+sanger_gene_effect <- load_sanger_gene_effect()
+demeter_gene_effect <- load_demeter_gene_effect()
+demeter_drive_gene_effect <- load_demeter_drive_gene_effect()
+sanger_dose_response <- load_sanger_dose_response()
+prism_secondary_response <- load_prism_secondary_response()
+```
+
+The table below highlights all of the cell lines that are included in the analyses and the types that they are annotated as:
+
+```{r}
+cell_lines_included_table <- rbind(
+  data.frame(name=row.names(gene_dependency), stringsAsFactors = F) %>% mutate(Source='Dependency'),
+  data.frame(name=row.names(gene_expression), stringsAsFactors = F) %>% mutate(Source='Expression'),
+  data.frame(name=row.names(sanger_gene_effect), stringsAsFactors = F) %>% mutate(Source='Sanger CRISPR'),
+  data.frame(name=row.names(demeter_gene_effect), stringsAsFactors = F) %>% mutate(Source='DEMETER2 Combined RNAi'),
+  data.frame(name=row.names(demeter_drive_gene_effect), stringsAsFactors = F) %>% mutate(Source='DEMETER2 DRIVE RNAi'),
+  data.frame(name=unique(sanger_dose_response$ARXSPAN_ID), stringsAsFactors = F) %>% mutate(Source='GDSC'),
+  data.frame(name=unique(prism_secondary_response$depmap_id), stringsAsFactors = F) %>% mutate(Source='PRISM')
+) %>% mutate(value=1) %>% mutate(DepMap_ID=name) %>%
+  spread(., Source, value) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, CCLE_name, Type), by='DepMap_ID') %>%
+  dplyr::select(DepMap_ID, CCLE_name, everything())
+```
+
+```{r include=TRUE} 
+cell_lines_included_table %>% datatable(options=list(scrollX=T))
+```
+
+# Overview
+
+* Compare MCL1 dependency across RNAi and other CRISPR screens
+* Compare MCL1 dependency to drug data from CTD2, GDSC, PRISM
+
+```{r}
+genes_to_highlight <- "MCL1 (4170)"
+
+data_to_plot <- left_join(
+  left_join(mf, 
+            as.data.frame(cbind(rownames(gene_effect), gene_effect[,genes_to_highlight,drop=F])) %>% 
+              set_colnames(c("DepMap_ID", "gene_effect")), by = "DepMap_ID"),
+  as.data.frame(cbind(rownames(demeter_gene_effect), demeter_gene_effect[,genes_to_highlight,drop=F])) %>% 
+    set_colnames(c("DepMap_ID", "demeter_gene_effect")), by = "DepMap_ID") %>%
+  dplyr::mutate(gene_effect = as.numeric(gene_effect), 
+                demeter_gene_effect = as.numeric(demeter_gene_effect))
+
+data_to_plot %<>% left_join(., as.data.frame(cbind(rownames(demeter_drive_gene_effect), demeter_drive_gene_effect[,genes_to_highlight,drop=F])) %>% 
+                              set_colnames(c("DepMap_ID", "demeter_drive_gene_effect")), by = "DepMap_ID") %>%
+  dplyr::mutate(demeter_drive_gene_effect = as.numeric(demeter_drive_gene_effect))
+
+data_to_plot %<>% left_join(., as.data.frame(cbind(rownames(sanger_gene_effect), sanger_gene_effect[,genes_to_highlight,drop=F])) %>% 
+                              set_colnames(c("DepMap_ID", "sanger_gene_effect")), by = "DepMap_ID") %>%
+  dplyr::mutate(sanger_gene_effect = as.numeric(sanger_gene_effect))
+
+data_to_plot %<>% left_join(., prism_secondary_response %>% 
+                              dplyr::filter(name == "TW-37") %>%
+                              dplyr::select(depmap_id, auc) %>%
+                              magrittr::set_colnames(c("DepMap_ID", "prism_auc_TW37")), by = "DepMap_ID") %>%
+  dplyr::mutate(prism_auc_TW37 = as.numeric(prism_auc_TW37))
+
+data_to_plot %<>% left_join(., prism_secondary_response %>% 
+                              dplyr::filter(name == "gossypol") %>%
+                              dplyr::select(depmap_id, auc) %>%
+                              magrittr::set_colnames(c("DepMap_ID", "prism_auc_gossypol")), by = "DepMap_ID") %>%
+  dplyr::mutate(prism_auc_gossypol = as.numeric(prism_auc_gossypol))
+
+data_to_plot %<>% left_join(., prism_secondary_response %>% 
+                              dplyr::filter(name == "BMS-387032") %>%
+                              dplyr::select(depmap_id, auc) %>%
+                              magrittr::set_colnames(c("DepMap_ID", "prism_auc_BMS387032")), by = "DepMap_ID") %>%
+  dplyr::mutate(prism_auc_BMS387032 = as.numeric(prism_auc_BMS387032))
+
+data_to_plot %<>% left_join(., prism_secondary_response %>% 
+                              dplyr::filter(name == "morin") %>%
+                              dplyr::select(depmap_id, auc) %>%
+                              magrittr::set_colnames(c("DepMap_ID", "prism_auc_morin")), by = "DepMap_ID") %>%
+  dplyr::mutate(prism_auc_morin = as.numeric(prism_auc_morin))
+
+data_to_plot %<>% left_join(., sanger_dose_response %>% 
+                              dplyr::filter(DRUG_NAME == "MIM1") %>%
+                              dplyr::select(ARXSPAN_ID, AUC_PUBLISHED) %>%
+                              magrittr::set_colnames(c("DepMap_ID", "sanger_auc_MIM1")), by = "DepMap_ID") %>%
+  dplyr::mutate(sanger_auc_MIM1 = as.numeric(sanger_auc_MIM1))
+
+data_to_plot %<>% left_join(., sanger_dose_response %>% 
+                              dplyr::filter(DRUG_NAME == "TW-37") %>%
+                              dplyr::select(ARXSPAN_ID, AUC_PUBLISHED) %>%
+                              magrittr::set_colnames(c("DepMap_ID", "sanger_auc_TW37")), by = "DepMap_ID") %>%
+  dplyr::mutate(sanger_auc_TW37 = as.numeric(sanger_auc_TW37))
+
+data_to_plot %<>% left_join(., sanger_dose_response %>% 
+                              dplyr::filter(DRUG_NAME == "OBATOCLAX") %>%
+                              dplyr::select(ARXSPAN_ID, AUC_PUBLISHED) %>%
+                              magrittr::set_colnames(c("DepMap_ID", "sanger_auc_obatoclax")), by = "DepMap_ID") %>%
+  dplyr::mutate(sanger_auc_obatoclax = as.numeric(sanger_auc_obatoclax))
+
+data_to_plot %<>% left_join(., sanger_dose_response %>% 
+                              dplyr::filter(grepl("SABUTOCLAX", DRUG_NAME)) %>%
+                              dplyr::select(ARXSPAN_ID, AUC_PUBLISHED) %>%
+                              magrittr::set_colnames(c("DepMap_ID", "sanger_auc_sabutoclax")), by = "DepMap_ID") %>%
+  dplyr::mutate(sanger_auc_sabutoclax = as.numeric(sanger_auc_sabutoclax))
+
+data_to_plot %<>% left_join(., sanger_dose_response %>% 
+                              dplyr::filter(grepl("UMI-77", DRUG_NAME)) %>%
+                              dplyr::select(ARXSPAN_ID, AUC_PUBLISHED) %>%
+                              magrittr::set_colnames(c("DepMap_ID", "sanger_auc_UMI77")), by = "DepMap_ID") %>%
+  dplyr::mutate(sanger_auc_UMI77 = as.numeric(sanger_auc_UMI77))
+```
+
+### Comparing to other dependency datasets {.tabset .tabset-fade}
+
+#### Sanger CRISPR
+
+```{r include=T}
+MCL1_comparison_plot <- ggplot(data_to_plot %>% filter(!is.na(gene_effect), !is.na(sanger_gene_effect)), 
+                               aes(x = gene_effect, y = sanger_gene_effect, color = PvA == "Pediatric")) + 
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black") +
+  stat_smooth(method = "lm", formula = "y ~ x", alpha = 0.2) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("gray", "red"), guide = F) + 
+  theme_bw() +
+  xlab('MCL1 gene effect (DepMap)') + ylab('MCL1 gene effect (Sanger)') +
+  theme_Publication() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(), aspect.ratio = 1,
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+
+MCL1_comparison_plot
+
+saveRDS(MCL1_comparison_plot, file = paste0('figures/mcl1_compare/depmap_sanger_', version_to_use, '.rds'))
+ggsave(MCL1_comparison_plot, filename = paste0('figures/mcl1_compare/depmap_sanger_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+#### DEMETER2 RNAi 
+
+```{r include=T}
+MCL1_comparison_plot <- ggplot(data_to_plot %>% filter(!is.na(gene_effect), !is.na(demeter_gene_effect)), 
+                               aes(x = gene_effect, y = demeter_gene_effect, color = PvA == "Pediatric")) + 
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black") +
+  stat_smooth(method = "lm", formula = "y ~ x", alpha = 0.2) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("gray", "red"), guide = F) + 
+  theme_bw() +
+  xlab('MCL1 gene effect (DepMap)') + ylab('MCL1 gene effect (DEMETER2)') +
+  theme_Publication() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(), aspect.ratio = 1,
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+
+MCL1_comparison_plot
+
+saveRDS(MCL1_comparison_plot, file = paste0('figures/mcl1_compare/depmap_demeter_', version_to_use, '.rds'))
+ggsave(MCL1_comparison_plot, filename = paste0('figures/mcl1_compare/depmap_demeter_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+#### DEMETER2 DRIVE RNAi 
+
+```{r include=T}
+MCL1_comparison_plot <- ggplot(data_to_plot %>% filter(!is.na(gene_effect), !is.na(demeter_drive_gene_effect)), 
+                               aes(x = gene_effect, y = demeter_drive_gene_effect, color = PvA == "Pediatric")) + 
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black") +
+  stat_smooth(method = "lm", formula = "y ~ x", alpha = 0.2) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("gray", "red"), guide = F) + 
+  theme_bw() +
+  xlab('MCL1 gene effect (DepMap)') + ylab('MCL1 gene effect (DEMETER2 DRIVE)') +
+  theme_Publication() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(), aspect.ratio = 1,
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+
+MCL1_comparison_plot
+
+saveRDS(MCL1_comparison_plot, file = paste0('figures/mcl1_compare/depmap_demeter_drive_', version_to_use, '.rds'))
+ggsave(MCL1_comparison_plot, filename = paste0('figures/mcl1_compare/depmap_demeter_drive_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+### Comparing to drug datasets {.tabset .tabset-fade}
+
+#### PRISM TW37
+
+```{r include=T}
+MCL1_comparison_plot <- ggplot(data_to_plot %>% filter(!is.na(gene_effect), !is.na(prism_auc_TW37)), 
+                               aes(x = gene_effect, y = prism_auc_TW37, color = PvA == "Pediatric")) + 
+  stat_smooth(method = "lm", formula = "y ~ x", alpha = 0.2) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("gray", "red"), guide = F) + 
+  theme_bw() +
+  xlab('MCL1 gene effect (DepMap)') + ylab('TW-37 AUC (PRISM)') +
+  theme_Publication() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(), aspect.ratio = 1,
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+
+MCL1_comparison_plot
+
+saveRDS(MCL1_comparison_plot, file = paste0('figures/mcl1_compare/depmap_prism_TW37_', version_to_use, '.rds'))
+ggsave(MCL1_comparison_plot, filename = paste0('figures/mcl1_compare/depmap_prism_TW37_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+#### PRISM morin
+
+```{r include=T}
+MCL1_comparison_plot <- ggplot(data_to_plot %>% filter(!is.na(gene_effect), !is.na(prism_auc_morin)), 
+                               aes(x = gene_effect, y = prism_auc_morin, color = PvA == "Pediatric")) + 
+  stat_smooth(method = "lm", formula = "y ~ x", alpha = 0.2) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("gray", "red"), guide = F) + 
+  theme_bw() +
+  xlab('MCL1 gene effect (DepMap)') + ylab('Morin AUC (PRISM)') +
+  theme_Publication() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(), aspect.ratio = 1,
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+
+MCL1_comparison_plot
+
+saveRDS(MCL1_comparison_plot, file = paste0('figures/mcl1_compare/depmap_prism_morin_', version_to_use, '.rds'))
+ggsave(MCL1_comparison_plot, filename = paste0('figures/mcl1_compare/depmap_prism_morin_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+#### PRISM gossypol
+
+```{r include=T}
+MCL1_comparison_plot <- ggplot(data_to_plot %>% filter(!is.na(gene_effect), !is.na(prism_auc_gossypol)), 
+                               aes(x = gene_effect, y = prism_auc_gossypol, color = PvA == "Pediatric")) + 
+  stat_smooth(method = "lm", formula = "y ~ x", alpha = 0.2) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("gray", "red"), guide = F) + 
+  theme_bw() +
+  xlab('MCL1 gene effect (DepMap)') + ylab('Gossypol AUC (PRISM)') +
+  theme_Publication() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(), aspect.ratio = 1,
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+
+MCL1_comparison_plot
+
+saveRDS(MCL1_comparison_plot, file = paste0('figures/mcl1_compare/depmap_prism_gossypol_', version_to_use, '.rds'))
+ggsave(MCL1_comparison_plot, filename = paste0('figures/mcl1_compare/depmap_prism_gossypol_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+#### PRISM BMS387032
+
+```{r include=T}
+MCL1_comparison_plot <- ggplot(data_to_plot %>% filter(!is.na(gene_effect), !is.na(prism_auc_BMS387032)), 
+                               aes(x = gene_effect, y = prism_auc_BMS387032, color = PvA == "Pediatric")) + 
+  stat_smooth(method = "lm", formula = "y ~ x", alpha = 0.2) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("gray", "red"), guide = F) + 
+  theme_bw() +
+  xlab('MCL1 gene effect (DepMap)') + ylab('BMS-387032 AUC (PRISM)') +
+  theme_Publication() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(), aspect.ratio = 1,
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+
+MCL1_comparison_plot
+
+saveRDS(MCL1_comparison_plot, file = paste0('figures/mcl1_compare/depmap_prism_BMS387032_', version_to_use, '.rds'))
+ggsave(MCL1_comparison_plot, filename = paste0('figures/mcl1_compare/depmap_prism_BMS387032_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+#### Sanger TW37
+
+```{r include=T}
+MCL1_comparison_plot <- ggplot(data_to_plot %>% filter(!is.na(gene_effect), !is.na(sanger_auc_TW37)), 
+                               aes(x = gene_effect, y = sanger_auc_TW37, color = PvA == "Pediatric")) + 
+  stat_smooth(method = "lm", formula = "y ~ x", alpha = 0.2) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("gray", "red"), guide = F) + 
+  theme_bw() +
+  xlab('MCL1 gene effect (DepMap)') + ylab('TW-37 AUC (Sanger)') +
+  theme_Publication() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(), aspect.ratio = 1,
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+
+MCL1_comparison_plot
+
+saveRDS(MCL1_comparison_plot, file = paste0('figures/mcl1_compare/depmap_sanger_TW37_', version_to_use, '.rds'))
+ggsave(MCL1_comparison_plot, filename = paste0('figures/mcl1_compare/depmap_sanger_TW37_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+#### Sanger MIM1
+
+```{r include=T}
+MCL1_comparison_plot <- ggplot(data_to_plot %>% filter(!is.na(gene_effect), !is.na(sanger_auc_MIM1)), 
+                               aes(x = gene_effect, y = sanger_auc_MIM1, color = PvA == "Pediatric")) + 
+  stat_smooth(method = "lm", formula = "y ~ x", alpha = 0.2) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("gray", "red"), guide = F) + 
+  theme_bw() +
+  xlab('MCL1 gene effect (DepMap)') + ylab('MIM1 AUC (Sanger)') +
+  theme_Publication() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(), aspect.ratio = 1,
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+
+MCL1_comparison_plot
+
+saveRDS(MCL1_comparison_plot, file = paste0('figures/mcl1_compare/depmap_sanger_MIM1_', version_to_use, '.rds'))
+ggsave(MCL1_comparison_plot, filename = paste0('figures/mcl1_compare/depmap_sanger_MIM1_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+#### Sanger UMI77
+
+```{r include=T}
+MCL1_comparison_plot <- ggplot(data_to_plot %>% filter(!is.na(gene_effect), !is.na(sanger_auc_UMI77)), 
+                               aes(x = gene_effect, y = sanger_auc_UMI77, color = PvA == "Pediatric")) + 
+  stat_smooth(method = "lm", formula = "y ~ x", alpha = 0.2) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("gray", "red"), guide = F) + 
+  theme_bw() +
+  xlab('MCL1 gene effect (DepMap)') + ylab('UMI-77 AUC (Sanger)') +
+  theme_Publication() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(), aspect.ratio = 1,
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+
+MCL1_comparison_plot
+
+saveRDS(MCL1_comparison_plot, file = paste0('figures/mcl1_compare/depmap_sanger_UMI77_', version_to_use, '.rds'))
+ggsave(MCL1_comparison_plot, filename = paste0('figures/mcl1_compare/depmap_sanger_UMI77_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+#### Sanger obatoclax
+
+```{r include=T}
+MCL1_comparison_plot <- ggplot(data_to_plot %>% filter(!is.na(gene_effect), !is.na(sanger_auc_obatoclax)), 
+                               aes(x = gene_effect, y = sanger_auc_obatoclax, color = PvA == "Pediatric")) + 
+  stat_smooth(method = "lm", formula = "y ~ x", alpha = 0.2) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("gray", "red"), guide = F) + 
+  theme_bw() +
+  xlab('MCL1 gene effect (DepMap)') + ylab('Obatoclax AUC (Sanger)') +
+  theme_Publication() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(), aspect.ratio = 1,
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+
+MCL1_comparison_plot
+
+saveRDS(MCL1_comparison_plot, file = paste0('figures/mcl1_compare/depmap_sanger_obatoclax_', version_to_use, '.rds'))
+ggsave(MCL1_comparison_plot, filename = paste0('figures/mcl1_compare/depmap_sanger_obatoclax_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+#### Sanger sabutoclax
+
+```{r include=T}
+MCL1_comparison_plot <- ggplot(data_to_plot %>% filter(!is.na(gene_effect), !is.na(sanger_auc_sabutoclax)), 
+                               aes(x = gene_effect, y = sanger_auc_sabutoclax, color = PvA == "Pediatric")) + 
+  stat_smooth(method = "lm", formula = "y ~ x", alpha = 0.2) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("gray", "red"), guide = F) + 
+  theme_bw() +
+  xlab('MCL1 gene effect (DepMap)') + ylab('Sabutoclax AUC (Sanger)') +
+  theme_Publication() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(), aspect.ratio = 1,
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+
+MCL1_comparison_plot
+
+saveRDS(MCL1_comparison_plot, file = paste0('figures/mcl1_compare/depmap_sanger_sabutoclax_', version_to_use, '.rds'))
+ggsave(MCL1_comparison_plot, filename = paste0('figures/mcl1_compare/depmap_sanger_sabutoclax_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+### Comparing to heme malignancies {.tabset .tabset-fade}
+
+#### Solid tumors to heme malignancies
+
+```{r include=T}
+load_gene_effect_heme <- function(){
+  if(!file.exists("data/gene_effect.csv")) # If file does not exist, download from FigShare. Otherwise load local file.
+  {
+    gene_effect <- fread(gene_effect_url)
+    fwrite(gene_effect, "data/gene_effect.csv")
+  } else
+  {
+    gene_effect <- fread("data/gene_effect.csv")
+  }
+  # Reformat as a matrix.
+  gene_effect %<>% dplyr::filter(!(V1 %in% mf$DepMap_ID))
+  rownames_temp <- gene_effect$V1
+  gene_effect <- as.matrix(gene_effect[,-1])
+  rownames(gene_effect) <- rownames_temp
+  return(gene_effect)
+}
+
+gene_effect_heme <- load_gene_effect_heme()
+
+genes_to_highlight <- "MCL1 (4170)"
+
+data_to_plot <- rbind(
+  left_join(mf, 
+            as.data.frame(cbind(rownames(gene_effect), gene_effect[,genes_to_highlight,drop=F])) %>% 
+              magrittr::set_colnames(c("DepMap_ID", "gene_effect")), by = "DepMap_ID") %>%
+    dplyr::select(DepMap_ID, PvA, gene_effect),
+  as.data.frame(cbind(rownames(gene_effect_heme), gene_effect_heme[,genes_to_highlight,drop=F])) %>% 
+    magrittr::set_colnames(c("DepMap_ID", "gene_effect")) %>%
+    dplyr::mutate(PvA = "Heme") %>%
+    dplyr::select(DepMap_ID, PvA, gene_effect)
+  ) %>%
+  dplyr::mutate(gene_effect = as.numeric(gene_effect)) %>%
+  dplyr::filter(!is.na(PvA) & !is.na(gene_effect) & PvA != "Fibroblast")
+
+### Plot cmparison of peds v adults v heme
+data_to_plot$PvA <- factor(data_to_plot$PvA, levels = c("Pediatric", "Adult", "Heme"))
+data_to_plot %<>% dplyr::group_by(PvA) %>%
+  dplyr::mutate(n = n()) %>% 
+  dplyr::mutate(label = paste0(PvA,' (n=',n,')')) %>%
+  dplyr::ungroup()
+
+MCL1_comparison_plot <- ggplot(data_to_plot, aes(x = PvA, y = gene_effect, fill=PvA, color=PvA)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  scale_fill_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Heme'='black')) +
+  scale_color_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Heme'='black')) +
+  theme_bw() +
+  xlab('') + ylab('MCL1 gene effect') +
+  scale_x_discrete(labels=setNames(unique(data_to_plot$label), unique(data_to_plot$PvA))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means(comparisons = list(c("Pediatric","Heme"), c("Pediatric","Adult"), c("Heme","Adult")), label.y = c(0.5, 0.1, 0.3)) +
+  coord_cartesian(clip = "off")
+
+MCL1_comparison_plot
+
+saveRDS(MCL1_comparison_plot, file = paste0('figures/mcl1_compare/depmap_vs_heme_', version_to_use, '.rds'))
+ggsave(MCL1_comparison_plot, filename = paste0('figures/mcl1_compare/depmap_vs_heme_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+## Session Info
+
+```{r session_info, include=TRUE, echo=TRUE, results='markup'}
+devtools::session_info()
+```
+
+```{r include=TRUE}
+as.data.frame(`Dataset Used`) %>% datatable(options=list(scrollX=T))
+```

@@ -1,0 +1,1113 @@
+---
+title: "Tumor and Cell Line Expression Analyses Figures"
+author: "Neekesh Dharia & Guillaume Kugener"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include=FALSE, message=FALSE, warning = FALSE)
+source('setup.R')
+source('load_data.R')
+```
+
+
+# Generated using: `r toupper(version_to_use)`
+
+
+```{r load_needed_datasets}
+# This script uses the following datasets:
+mf <- mf
+
+if(!dir.exists('figures')) { dir.create('figures') }
+if(!dir.exists('figures/tumor_cl')) { dir.create('figures/tumor_cl') }
+```
+
+
+# Overview
+
+* Co-clustering cell lines and tumors in expression space using Celligner. https://www.biorxiv.org/content/10.1101/2020.03.25.008342v1
+
+```{r}
+treehousemetadata <- read_tsv('input_files/Treehouse_metadata_clinical_TumorCompendium_v10_PolyA_2019-07-25.tsv', 
+                              col_types = list(th_sampleid = col_character(),
+                                               disease = col_character(),
+                                               age_at_dx = col_double(),
+                                               pedaya = col_character(),
+                                               gender = col_character(),
+                                               site_id = col_character(),
+                                               site_donor_id = col_character(),
+                                               site_sampleid = col_character()))
+pediatric_glioma <- treehousemetadata %>% dplyr::filter(grepl("glio", disease) & !grepl("paragan", disease) & age_at_dx <= 21)
+pediatric_germcell <- treehousemetadata %>% dplyr::filter((grepl("germ", disease) | grepl("teratoma", disease)) & age_at_dx <= 21)
+pediatric_sarcoma <- treehousemetadata %>% dplyr::filter((disease == "sarcoma" | disease == "epithelioid sarcoma" | grepl("undifferentiated sarcoma", disease)) & age_at_dx <= 21)
+
+quick_primary_site_map <- c(
+  # Pedi tumor types in mf: unique(mf$Type[mf$PvA == "Pediatric"]): Ewing, Rhabdomyosarcoma, Medulloblastoma, Neuroblastoma, Osteosarcoma, Rhabdoid, Pediatric Glioma, Hepatoblastoma, Renal Medullary Carcinoma, Pediatric Sarcoma, Synovial Sarcoma, Retinoblastoma, Pediatric Germ Cell, Pediatric CNS PNET
+  # Ewing
+  "Ewing sarcoma"="Ewing",
+  "ewing sarcoma"="Ewing",
+  "ewing_sarcoma"="Ewing",
+  "Ewing's"="Ewing",
+  # RMS
+  'rhabdomyosarcoma'='Rhabdomyosarcoma',
+  "alveolar rhabdomyosarcoma"='Rhabdomyosarcoma', 
+  "embryonal rhabdomyosarcoma"='Rhabdomyosarcoma', 
+  "rhabdomyosarcoma_engineered"='Rhabdomyosarcoma',
+  "spindle cell/sclerosing rhabdomyosarcoma"='Rhabdomyosarcoma',
+  # Medulloblastoma
+  "medulloblastoma"="Medulloblastoma",
+  # Neuroblastoma
+  "neuroblastoma"="Neuroblastoma",
+  # Osteosarcoma
+  'osteosarcoma'='Osteosarcoma',
+  # Rhaboid
+  "atypical teratoid/rhabdoid tumor"="Rhabdoid", 
+  "RT"="Rhabdoid",
+  "rhabdoid"="Rhabdoid",
+  # Hepatoblastoma,
+  "hepatoblastoma"="Hepatoblastoma",
+  # Renal Medullary Carcinoma - none in the primary tumors
+  # Pediatric sarcoma - determine by age as above
+  # Synovial sarcoma
+  "synovial sarcoma"="Synovial Sarcoma", 
+  "synovial_sarcoma"="Synovial Sarcoma",
+  # Retinoblastoma
+  "retinoblastoma"="Retinoblastoma",
+  # Pediatric germ cell - deterime by age as above
+  # Pediatric CNS PNET 
+  "supratentorial embryonal tumor NOS"="Pediatric CNS PNET"
+)
+
+# Filter heme malignancies
+treehousemetadata_updated <- treehousemetadata %>% 
+  dplyr::filter(!grepl("leukemia", disease)) %>%
+  dplyr::filter(!grepl("lymphoma", disease)) %>%
+  dplyr::filter(!grepl("myeloid", disease)) 
+
+# Edit tumors types that are in the same section
+treehousemetadata_updated %<>% dplyr::mutate(Type=case_when(
+  disease %in% names(quick_primary_site_map) ~ quick_primary_site_map[disease],
+  th_sampleid %in% pediatric_glioma$th_sampleid ~ "Pediatric Glioma",
+  th_sampleid %in% pediatric_germcell$th_sampleid ~ "Pediatric Germ Cell",
+  th_sampleid %in% pediatric_sarcoma$th_sampleid ~ "Pediatric Sarcoma",
+  TRUE ~ disease
+))
+
+# Edit type to be age based in addition to pediatric tumor types
+treehousemetadata_updated %<>% dplyr::mutate(PvA=case_when(
+  Type %in% pediatric_types ~ "Pediatric",
+  (age_at_dx <= 21) ~ "Pediatric",
+  TRUE ~ "Other"
+))
+
+treehousemetadata_updated %<>% dplyr::rename(sampleID = th_sampleid) %>%
+  dplyr::mutate(Type2 = "tumor")
+
+rhabdoid_TARGET <- data.frame(DepMap_ID = "",
+                              sampleID = c("TARGET-52-PABKLN-01A", "TARGET-52-PAJLWM-01A", "TARGET-52-PAJNER-01A", "TARGET-52-PAJNFP-01A", "TARGET-52-PAJNFZ-01A", "TARGET-52-PARECB-01A", "TARGET-52-PARGRN-01A", "TARGET-52-PARIRN-01A", "TARGET-52-PARPFY-01A", "TARGET-52-PARRCL-01A", "TARGET-52-PARUGK-01A", "TARGET-52-PARZBI-01A", "TARGET-52-PASABD-01A", "TARGET-52-PASADZ-01A", "TARGET-52-PASCDH-01A", "TARGET-52-PASDLA-01A", "TARGET-52-PASRHU-01A", "TARGET-52-PASVDP-01A", "TARGET-52-PASWZZ-01A", "TARGET-52-PASXNA-01A", "TARGET-52-PASYNF-01A", "TARGET-52-PASZYE-01A", "TARGET-52-PATAFT-01A", "TARGET-52-PATBLF-01A", "TARGET-52-PATDVL-01A", "TARGET-52-PATENH-01A", "TARGET-52-PATFXW-01A", "TARGET-52-PATFZZ-01A", "TARGET-52-PATXEE-01A", "TARGET-52-PATXKA-01A", "TARGET-52-PAUCGJ-01A", "TARGET-52-PAUDPV-01A", "TARGET-52-PAUEKW-01A", "TARGET-52-PAUFVP-01A", "TARGET-52-PAUGYZ-01A", "TARGET-52-PAUHAZ-01A", "TARGET-52-PAUNPA-01A"),
+                              Type = "Rhabdoid",
+                              Type2 = "tumor",
+                              age = NA,
+                              PvA = "Pediatric")
+
+mf_combined <- rbind(mf %>% 
+                       dplyr::rename(sampleID = CCLE_name) %>% 
+                       dplyr::mutate(Type2 = "CL") %>% 
+                       dplyr::select(DepMap_ID, sampleID, Type, Type2, age, PvA), 
+                     treehousemetadata_updated %>% 
+                       dplyr::mutate(DepMap_ID = "") %>% 
+                       dplyr::rename(age=age_at_dx) %>%
+                       dplyr::select(DepMap_ID, sampleID, Type, Type2, age, PvA),
+                     rhabdoid_TARGET)
+```
+
+
+```{r}
+tumor_cl_aligned_data <- fread('Celligner/Celligner_aligned_data.csv')
+rownames_tumor_cl_aligned_data <- tumor_cl_aligned_data$V1
+tumor_cl_aligned_data <- as.matrix(tumor_cl_aligned_data[,-1])
+rownames(tumor_cl_aligned_data) <- rownames_tumor_cl_aligned_data
+```
+
+
+## Pediatric tumor types with CL data
+
+```{r}
+# Run UMAP only on pediatric tumor types with CL data
+mf_pediatric_samples_with_CL_data <- mf_combined %>%
+  dplyr::filter(Type %in% pediatric_types)
+
+if (!file.exists("data/tumor_cl_reannotated_pediatric.csv"))
+{
+  celligner_obj <- Seurat::CreateSeuratObject(tumor_cl_aligned_data[, colnames(tumor_cl_aligned_data) %in% mf_pediatric_samples_with_CL_data$sampleID],
+                                              min.cells = 0,
+                                              min.features = 0,
+                                              meta.data = mf_pediatric_samples_with_CL_data %>%
+                                                set_rownames(mf_pediatric_samples_with_CL_data$sampleID))
+  # mean center data
+  celligner_obj <- Seurat::ScaleData(celligner_obj, features = rownames(Seurat::GetAssayData(celligner_obj)), do.scale = F)
+  # PCA
+  celligner_obj %<>% Seurat::RunPCA(assay='RNA',
+                                    features = rownames(Seurat::GetAssayData(celligner_obj)),
+                                    npcs = 70, verbose = F)
+  # UMAP
+  celligner_obj %<>% Seurat::RunUMAP(assay = 'RNA', dims = 1:70,
+                                     reduction.use = 'pca',
+                                     n.neighbors = 10,
+                                     min.dist =  0.5,
+                                     metric ='euclidean', verbose=F)
+  
+  tumor_cl_clustering_results <- full_join(mf_pediatric_samples_with_CL_data, 
+                                           as.data.frame(celligner_obj@reductions$umap@cell.embeddings) %>% 
+                                             dplyr::mutate(sampleID = rownames(.)),
+                                           by = "sampleID") %>%
+    dplyr::rename(Group2=Type, type=Type2)
+  fwrite(tumor_cl_clustering_results, "data/tumor_cl_reannotated_pediatric.csv")
+} else
+{
+  tumor_cl_clustering_results <- fread("data/tumor_cl_reannotated_pediatric.csv")
+  
+  tumor_cl_clustering_results <- full_join(mf_pediatric_samples_with_CL_data, 
+                                           tumor_cl_clustering_results %>% dplyr::select(sampleID, UMAP_1, UMAP_2),
+                                           by = "sampleID") %>%
+    dplyr::rename(Group2=Type, type=Type2) %>%
+    dplyr::filter(!is.na(Group2))
+  
+  fwrite(tumor_cl_clustering_results, "data/tumor_cl_reannotated_pediatric.csv")
+}
+
+tumor_cl_clustering_results %<>% filter(!is.na(UMAP_1))
+```
+
+
+```{r include=TRUE}
+n_tumor_cl <- tumor_cl_clustering_results %>% group_by(type) %>% dplyr::summarise(n = n()) 
+n_tumor_cl %>% datatable(options=list(scrollX=T))
+```
+
+```{r include=TRUE}
+n_lineage <- tumor_cl_clustering_results %>% mutate(Group2 = paste0(Group2, " ", type)) %>% group_by(Group2) %>% dplyr::summarise(n = n()) 
+n_lineage %>% datatable(options=list(scrollX=T))
+```
+
+
+```{r include=TRUE, fig.width=10}
+type_label <- unique(tumor_cl_clustering_results %>% 
+                       group_by(type) %>% 
+                       mutate(n_tumor_cl = n()) %>%
+                       ungroup() %>%
+                       mutate(type_label = paste0(type, " (n=", n_tumor_cl, ")")) %>%
+                       pull(type_label)
+)
+names(type_label) <- gsub(" [(].*","",type_label)
+Group2_label <- unique(tumor_cl_clustering_results %>% 
+                         group_by(Group2) %>% 
+                         dplyr::count(type) %>%
+                         ungroup() %>%
+                         spread(., type, n) %>%
+                         mutate(type_label = paste0(Group2, " (CL n=", CL, ", tumor n=", tumor,")")) %>%
+                         pull(type_label)
+)
+names(Group2_label) <- gsub(" [(].*","",Group2_label)
+
+alpha_for_subtype <- color_for_subtypes_vector %>% names() %>% setNames(rep(0.8, length(.)), .)
+
+final_plot <- ggplot(tumor_cl_clustering_results %>% dplyr::filter(type == "tumor"),
+                       aes(UMAP_1, UMAP_2, color=Group2, fill=Group2, shape=type, size=type, alpha=Group2, text=sampleID)) +
+  geom_point(color="white") +
+  geom_point(data = tumor_cl_clustering_results %>% dplyr::filter(type == "CL"), color = "white") + 
+  # So the legned order is correct
+  guides(
+    fill=guide_legend(title='Tumor type', override.aes = list(alpha=1, size=4, shape=21)), 
+    color=F, 
+    shape=guide_legend(title='Sample type', override.aes = list(color='black', fill='black', alpha=1, size=4)), 
+    alpha=F, 
+    size=F
+  ) +
+  xlab('1st UMAP component') + ylab('2nd UMAP component') +
+  ggtitle('Expression UMAP') +
+  scale_color_manual(values=c('Other'='gray', color_for_subtypes_vector), labels = Group2_label) +
+  scale_fill_manual(values=c('Other'='gray', color_for_subtypes_vector), labels = Group2_label) +
+  scale_shape_manual(values=c('tumor'=21, 'CL'=24), labels = type_label) +
+  scale_alpha_manual(values=c('Other'=0.8, alpha_for_subtype)) + 
+  scale_size_manual(values=c('tumor'=0.75, 'CL'=2)) +
+  theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank(), axis.text = element_blank(), axis.ticks = element_blank())
+
+final_plot
+
+saveRDS(final_plot, file = paste0('figures/tumor_cl/tumor_cl_reannotated_pediatric', version_to_use, '.rds'))
+ggsave(final_plot, filename = 'figures/tumor_cl/tumor_cl_reannotated_pediatric.pdf', height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+
+fwrite(tumor_cl_clustering_results %>% 
+         dplyr::select(sampleID, UMAP_1, UMAP_2, type, Group2) %>%
+         dplyr::mutate(fill = c('Other'='gray', color_for_subtypes_vector)[as.character(Group2)],
+                       shape = c('tumor'='triangle', 'CL'='circle')[type]), 'figures/tumor_cl/tumor_cl_data_for_plot_pediatric.csv')
+```
+
+```{r include=TRUE}
+ggplotly(final_plot)
+```
+
+
+
+```{r include=TRUE}
+for (typetoplot in unique(tumor_cl_clustering_results$Group2))
+{
+  if (typetoplot != "Other")
+  {
+    tumor_cl_to_plot <- tumor_cl_clustering_results %>% filter(Group2 == typetoplot)
+    type_label <- unique(tumor_cl_to_plot %>% 
+                           group_by(type) %>% 
+                           mutate(n_tumor_cl = n()) %>%
+                           ungroup() %>%
+                           mutate(type_label = paste0(type, " (n=", n_tumor_cl, ")")) %>%
+                           pull(type_label)
+    )
+    names(type_label) <- gsub(" [(].*","",type_label)
+    Group2_label <- unique(tumor_cl_to_plot %>% 
+                             group_by(Group2) %>% 
+                             dplyr::count(type) %>%
+                             ungroup() %>%
+                             spread(., type, n) %>%
+                             mutate(type_label = ifelse(grepl("tumor", Group2),
+                                                        paste0(Group2, " (CL n=", CL, ", tumor n=", tumor,")"), 
+                                                        paste0(Group2, " (CL n=", CL, ")"))) %>%
+                             pull(type_label)
+    )
+    names(Group2_label) <- gsub(" [(].*","",Group2_label)
+    
+    alpha_for_subtype <- color_for_subtypes_vector %>% names() %>% setNames(rep(0.5, length(.)), .)
+    
+    final_plot <- ggplot(tumor_cl_to_plot %>% dplyr::filter(type == "tumor"), 
+                         aes(UMAP_1, UMAP_2, color=Group2, fill=Group2, shape=type, size=type, alpha=Group2, text=sampleID)) +
+      # So the legned order is correct
+      geom_point(color="white") +
+      geom_point(data = tumor_cl_to_plot %>% dplyr::filter(type == "CL"), color = "white") + 
+      guides(
+        fill=guide_legend(title='Tumor type', override.aes = list(alpha=1, size=4, shape=21)), 
+        color=F,  
+        shape=guide_legend(title='Sample type', override.aes = list(color='black', fill='black', alpha=1, size=4)), 
+        alpha=F, 
+        size=F
+      ) +
+      xlab('1st UMAP component') + ylab('2nd UMAP component') +
+      ggtitle('Expression UMAP') +
+      scale_color_manual(values=c('Adult'='gray', color_for_subtypes_vector), labels = Group2_label) +
+      scale_fill_manual(values=c('Adult'='gray', color_for_subtypes_vector)) +
+      scale_shape_manual(values=c('tumor'=21, 'CL'=24), labels = type_label) +
+      scale_alpha_manual(values=c('Adult'=0.8, alpha_for_subtype)) + 
+      scale_size_manual(values=c('tumor'=0.75, 'CL'=2)) + 
+      geom_text_repel(data= tumor_cl_to_plot %>% filter(type=="CL"), aes(UMAP_1, UMAP_2, label = gsub("_.*", "",sampleID))) +
+      theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank())
+    
+    print(final_plot)
+    saveRDS(final_plot, file = paste0('figures/tumor_cl/tumor_cl_reannotated_',typetoplot, version_to_use, '.rds'))
+    ggsave(final_plot, filename = paste0('figures/tumor_cl/tumor_cl_reannotated_',typetoplot,'.pdf'), height = 6, width = 8, useDingbats=FALSE)
+  }
+}
+```
+
+
+
+```{r include=TRUE}
+for (typetoplot in c("Medulloblastoma"))
+{
+  if (typetoplot != "Other")
+  {
+    tumor_cl_to_plot <- tumor_cl_clustering_results %>% filter(Group2 == typetoplot)
+    type_label <- unique(tumor_cl_to_plot %>% 
+                           group_by(type) %>% 
+                           mutate(n_tumor_cl = n()) %>%
+                           ungroup() %>%
+                           mutate(type_label = paste0(type, " (n=", n_tumor_cl, ")")) %>%
+                           pull(type_label)
+    )
+    names(type_label) <- gsub(" [(].*","",type_label)
+    Group2_label <- unique(tumor_cl_to_plot %>% 
+                             group_by(Group2) %>% 
+                             dplyr::count(type) %>%
+                             ungroup() %>%
+                             spread(., type, n) %>%
+                             mutate(type_label = ifelse(grepl("tumor", Group2),
+                                                        paste0(Group2, " (CL n=", CL, ", tumor n=", tumor,")"), 
+                                                        paste0(Group2, " (CL n=", CL, ")"))) %>%
+                             pull(type_label)
+    )
+    names(Group2_label) <- gsub(" [(].*","",Group2_label)
+    
+    # PMID: 22853794
+    # WNT medulloblastomas express exorbitantly high levels of genes in the WNT pathway, including WIF1, DKK1, DKK2, DKK4, LEF1, AXIN2, WNT11, WNT16, FZD6 and FZD10 
+    WNT_genes <- c("ENSG00000156076", "ENSG00000107984", "ENSG00000155011", "ENSG00000104371", "ENSG00000138795",
+                   "ENSG00000168646", "ENSG00000085741", "ENSG00000002745", "ENSG00000164930", "ENSG00000111432")
+    # SHH medulloblastomas, as implied by their nomenclature, are characterized by aberrant expression of a plethora of known SHH pathway genes, such as HHIP, GLI1, GLI2, GLI3, PTCH2, BOC and ATOH1. WNT pathway genes SFRP1, SFRP4 and SFRP5 are also highly expressed in SHH tumors, as are members of the SOX gene family including SOX2, SOX9 and SOX13. 
+    SHH_genes <- c("ENSG00000164161", "ENSG00000111087", "ENSG00000074047", "ENSG00000106571", "ENSG00000117425",
+                   "ENSG00000144857", "ENSG00000172238", "ENSG00000104332", "ENSG00000106483", "ENSG00000120057", 
+                   "ENSG00000181449", "ENSG00000125398", "ENSG00000143842")
+    # Group 3 medulloblastomas tend to exhibit a retinal or phototransduction gene-expression signature, characterized by genes such as GABRA5, NRL and CRX
+    # The aberrant expression of MYC reported in the poor-prognosis Group 3 subgroup is consistent with several previous reports that have linked elevated MYC activity with an inferior clinical outcome. 
+    Grp3_genes <- c("ENSG00000186297", "ENSG00000129535", "ENSG00000105392", "ENSG00000136997")
+    # Group 4 medulloblastomas are characterized by expression of neuronal factors including GRM1 and GRM8, as well as potassium channel genes KCNA1 and KCNA5
+    Grp4_genes <- c("ENSG00000152822", "ENSG00000179603", "ENSG00000111262", "ENSG00000130037")
+    tumor_cl_to_plot %<>% 
+      dplyr::group_by(sampleID) %>%
+      dplyr::mutate(WNT_score = median(tumor_cl_aligned_data[rownames(tumor_cl_aligned_data) %in% WNT_genes, sampleID], na.rm = T),
+                    SHH_score = median(tumor_cl_aligned_data[rownames(tumor_cl_aligned_data) %in% SHH_genes, sampleID], na.rm = T),
+                    Grp3_score = median(tumor_cl_aligned_data[rownames(tumor_cl_aligned_data) %in% Grp3_genes, sampleID], na.rm = T),
+                    Grp4_score = median(tumor_cl_aligned_data[rownames(tumor_cl_aligned_data) %in% Grp4_genes, sampleID], na.rm = T))
+    
+    alpha_for_subtype <- color_for_subtypes_vector %>% names() %>% setNames(rep(0.5, length(.)), .)
+    for (subgroup in c("WNT", "SHH", "Grp3", "Grp4"))
+    {
+      final_plot <- ggplot(tumor_cl_to_plot %>% dplyr::filter(type == "tumor"), aes(UMAP_1, UMAP_2, color=eval(as.name(paste0(subgroup, "_score"))), 
+                                                 fill=eval(as.name(paste0(subgroup, "_score"))), shape=type, size=type, alpha=Group2, text=sampleID)) +
+        # So the legned order is correct
+        geom_point(color="white") +
+        geom_point(data = tumor_cl_to_plot %>% dplyr::filter(type == "CL"), color = "white") + 
+        guides(
+          fill=guide_legend(title=paste0("Score ", subgroup), override.aes = list(alpha=1, size=4, shape=21)), 
+          color=guide_legend(title=paste0("Score ", subgroup)),   
+          shape=guide_legend(title='Sample type', override.aes = list(color='black', fill='black', alpha=1, size=4)), 
+          alpha=F, 
+          size=F
+        ) +
+        xlab('1st UMAP component') + ylab('2nd UMAP component') +
+        ggtitle('Expression UMAP') +
+        # scale_color_manual(values=c('Adult'='gray', color_for_subtypes_vector), labels = Group2_label) +
+        # scale_fill_manual(values=c('Adult'='gray', color_for_subtypes_vector)) +
+        scale_shape_manual(values=c('tumor'=21, 'CL'=24), labels = type_label) +
+        scale_alpha_manual(values=c('Adult'=0.8, alpha_for_subtype)) + 
+        scale_size_manual(values=c('tumor'=0.75, 'CL'=2)) + 
+        geom_text_repel(data= tumor_cl_to_plot %>% filter(type=="CL"), aes(UMAP_1, UMAP_2, label = gsub("_.*", "",sampleID)), inherit.aes = F) +
+        theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank())
+      
+      print(final_plot)
+      saveRDS(final_plot, file = paste0('figures/tumor_cl/tumor_cl_reannotated_',typetoplot, '_', subgroup, version_to_use, '.rds'))
+      ggsave(final_plot, filename = paste0('figures/tumor_cl/tumor_cl_reannotated_',typetoplot, '_', subgroup,'.pdf'), height = 6, width = 8, useDingbats=FALSE)
+    }
+  }
+}
+```
+
+## Pediatric tumor types with CL or tumor data
+
+```{r}
+# Run UMAP only on pediatric tumor types with CL data
+mf_pediatric_samples <- mf_combined %>%
+  dplyr::filter(age <= 21 | Type %in% pediatric_types)
+
+if (!file.exists("data/tumor_cl_reannotated_pediatric_2.csv"))
+{
+  celligner_obj <- Seurat::CreateSeuratObject(tumor_cl_aligned_data[, colnames(tumor_cl_aligned_data) %in% mf_pediatric_samples$sampleID],
+                                              min.cells = 0,
+                                              min.features = 0,
+                                              meta.data = mf_pediatric_samples %>%
+                                                set_rownames(mf_pediatric_samples$sampleID))
+  # mean center data
+  celligner_obj <- Seurat::ScaleData(celligner_obj, features = rownames(Seurat::GetAssayData(celligner_obj)), do.scale = F)
+  # PCA
+  celligner_obj %<>% Seurat::RunPCA(assay='RNA',
+                                    features = rownames(Seurat::GetAssayData(celligner_obj)),
+                                    npcs = 70, verbose = F)
+  # UMAP
+  celligner_obj %<>% Seurat::RunUMAP(assay = 'RNA', dims = 1:70,
+                                     reduction.use = 'pca',
+                                     n.neighbors = 10,
+                                     min.dist =  0.5,
+                                     metric ='euclidean', verbose=F)
+  
+  tumor_cl_clustering_results <- full_join(mf_pediatric_samples, 
+                                           as.data.frame(celligner_obj@reductions$umap@cell.embeddings) %>% 
+                                             dplyr::mutate(sampleID = rownames(.)),
+                                           by = "sampleID") %>%
+    dplyr::rename(Group2=Type, type=Type2)
+  fwrite(tumor_cl_clustering_results, "data/tumor_cl_reannotated_pediatric_2.csv")
+} else
+{
+  tumor_cl_clustering_results <- fread("data/tumor_cl_reannotated_pediatric_2.csv")
+  
+  tumor_cl_clustering_results <- full_join(mf_pediatric_samples, 
+                                           tumor_cl_clustering_results %>% dplyr::select(sampleID, UMAP_1, UMAP_2),
+                                           by = "sampleID") %>%
+    dplyr::rename(Group2=Type, type=Type2) %>%
+    dplyr::filter(!is.na(Group2))
+  
+  fwrite(tumor_cl_clustering_results, "data/tumor_cl_reannotated_pediatric_2.csv")
+}
+
+tumor_cl_clustering_results %<>% filter(!is.na(UMAP_1))
+```
+
+
+```{r include=TRUE}
+n_tumor_cl <- tumor_cl_clustering_results %>% group_by(type) %>% dplyr::summarise(n = n()) 
+n_tumor_cl %>% datatable(options=list(scrollX=T))
+```
+
+```{r include=TRUE}
+n_lineage <- tumor_cl_clustering_results %>% mutate(Group2 = paste0(Group2, " ", type)) %>% group_by(Group2) %>% dplyr::summarise(n = n()) 
+n_lineage %>% datatable(options=list(scrollX=T))
+```
+
+
+```{r include=TRUE, fig.width=10}
+tumor_cl_clustering_results %<>% dplyr::mutate(Group3 = Group2, Group2 = ifelse(Group2 %in% pediatric_types, Group2, "Other"))
+
+type_label <- unique(tumor_cl_clustering_results %>% 
+                       group_by(type) %>% 
+                       mutate(n_tumor_cl = n()) %>%
+                       ungroup() %>%
+                       mutate(type_label = paste0(type, " (n=", n_tumor_cl, ")")) %>%
+                       pull(type_label)
+)
+names(type_label) <- gsub(" [(].*","",type_label)
+Group2_label <- unique(tumor_cl_clustering_results %>% 
+                         group_by(Group2) %>% 
+                         dplyr::count(type) %>%
+                         ungroup() %>%
+                         spread(., type, n) %>%
+                         mutate(type_label = paste0(Group2, " (CL n=", CL, ", tumor n=", tumor,")")) %>%
+                         pull(type_label)
+)
+names(Group2_label) <- gsub(" [(].*","",Group2_label)
+
+alpha_for_subtype <- color_for_subtypes_vector %>% names() %>% setNames(rep(0.5, length(.)), .)
+
+final_plot <- ggplot(tumor_cl_clustering_results %>% dplyr::filter(type == "tumor"), 
+                     aes(UMAP_1, UMAP_2, color=Group2, fill=Group2, shape=type, size=type, alpha=Group2, text=sampleID, label=Group3)) +
+  # So the legned order is correct
+  geom_point(color="white") +
+  geom_point(data = tumor_cl_clustering_results %>% dplyr::filter(type == "CL"), color = "white") + 
+  guides(
+    fill=guide_legend(title='Tumor type', override.aes = list(alpha=1, size=4, shape=21)), 
+    color=F, 
+    shape=guide_legend(title='Sample type', override.aes = list(color='black', fill='black', alpha=1, size=4)), 
+    alpha=F, 
+    size=F
+  ) +
+  xlab('1st UMAP component') + ylab('2nd UMAP component') +
+  ggtitle('Expression UMAP') +
+  scale_color_manual(values=c('Other'='gray', color_for_subtypes_vector), labels = Group2_label) +
+  scale_fill_manual(values=c('Other'='gray', color_for_subtypes_vector), labels = Group2_label) +
+  scale_shape_manual(values=c('tumor'=21, 'CL'=24), labels = type_label) +
+  scale_alpha_manual(values=c('Other'=0.8, alpha_for_subtype)) + 
+  scale_size_manual(values=c('tumor'=0.75, 'CL'=2)) +
+  theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank(), axis.text = element_blank(), axis.ticks = element_blank())
+
+final_plot
+
+saveRDS(final_plot, file = paste0('figures/tumor_cl/tumor_cl_reannotated_pediatric_2_', version_to_use, '.rds'))
+ggsave(final_plot, filename = 'figures/tumor_cl/tumor_cl_reannotated_pediatric_2.pdf', 
+       height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+
+fwrite(tumor_cl_clustering_results %>% 
+         dplyr::select(sampleID, UMAP_1, UMAP_2, type, Group2) %>%
+         dplyr::mutate(fill = c('Other'='gray', color_for_subtypes_vector)[as.character(Group2)],
+                       shape = c('tumor'='triangle', 'CL'='circle')[type]), 'figures/tumor_cl/tumor_cl_data_for_plot_pediatric_2.csv')
+```
+
+```{r include=TRUE}
+ggplotly(final_plot)
+```
+
+
+
+```{r include=TRUE}
+for (typetoplot in unique(tumor_cl_clustering_results$Group2))
+{
+  if (typetoplot != "Other")
+  {
+    tumor_cl_to_plot <- tumor_cl_clustering_results %>% filter(Group2 == typetoplot)
+    type_label <- unique(tumor_cl_to_plot %>% 
+                           group_by(type) %>% 
+                           mutate(n_tumor_cl = n()) %>%
+                           ungroup() %>%
+                           mutate(type_label = paste0(type, " (n=", n_tumor_cl, ")")) %>%
+                           pull(type_label)
+    )
+    names(type_label) <- gsub(" [(].*","",type_label)
+    Group2_label <- unique(tumor_cl_to_plot %>% 
+                             group_by(Group2) %>% 
+                             dplyr::count(type) %>%
+                             ungroup() %>%
+                             spread(., type, n) %>%
+                             mutate(type_label = ifelse(grepl("tumor", Group2),
+                                                        paste0(Group2, " (CL n=", CL, ", tumor n=", tumor,")"), 
+                                                        paste0(Group2, " (CL n=", CL, ")"))) %>%
+                             pull(type_label)
+    )
+    names(Group2_label) <- gsub(" [(].*","",Group2_label)
+    
+    alpha_for_subtype <- color_for_subtypes_vector %>% names() %>% setNames(rep(0.5, length(.)), .)
+    
+    final_plot <- ggplot(tumor_cl_to_plot %>% dplyr::filter(type == "tumor"), 
+                         aes(UMAP_1, UMAP_2, color=Group2, fill=Group2, shape=type, size=type, alpha=Group2, text=sampleID)) +
+      # So the legned order is correct
+      geom_point(color="white") +
+      geom_point(data = tumor_cl_to_plot %>% dplyr::filter(type == "CL"), color = "white") + 
+      guides(
+        fill=guide_legend(title='Tumor type', override.aes = list(alpha=1, size=4, shape=21)), 
+        color=F,  
+        shape=guide_legend(title='Sample type', override.aes = list(color='black', fill='black', alpha=1, size=4)), 
+        alpha=F, 
+        size=F
+      ) +
+      xlab('1st UMAP component') + ylab('2nd UMAP component') +
+      ggtitle('Expression UMAP') +
+      scale_color_manual(values=c('Adult'='gray', color_for_subtypes_vector), labels = Group2_label) +
+      scale_fill_manual(values=c('Adult'='gray', color_for_subtypes_vector)) +
+      scale_shape_manual(values=c('tumor'=21, 'CL'=24), labels = type_label) +
+      scale_alpha_manual(values=c('Adult'=0.8, alpha_for_subtype)) + 
+      scale_size_manual(values=c('tumor'=0.75, 'CL'=2)) + 
+      geom_text_repel(data= tumor_cl_to_plot %>% filter(type=="CL"), aes(UMAP_1, UMAP_2, label = gsub("_.*", "",sampleID))) +
+      theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank())
+
+    print(final_plot)
+    saveRDS(final_plot, file = paste0('figures/tumor_cl/tumor_cl_reannotated_2_',typetoplot, version_to_use, '.rds'))
+    ggsave(final_plot, filename = paste0('figures/tumor_cl/tumor_cl_reannotated_2_',typetoplot,'.pdf'), height = 6, width = 8, useDingbats=FALSE)
+  }
+}
+```
+
+
+The plot below all cell lines embedded
+
+```{r include=TRUE, fig.width=10}
+tumor_cl_umap <- fread("Celligner/updated_Celligner_pediatric_added.csv")
+tumor_cl_clustering_results <- full_join(mf_combined, 
+                                         tumor_cl_umap,
+                                         by = "sampleID") %>%
+  dplyr::filter(!is.na(UMAP_1)) %>%
+  dplyr::rename(Group2=Type) %>%
+  dplyr::mutate(Group2=ifelse(Group2 %in% pediatric_types, 
+                              Group2, 
+                              "Other")) %>%
+  dplyr::mutate(subtype = ifelse(sampleID == "CHLA57_BONE", NA, subtype)) %>%
+  dplyr::mutate(Group2=factor(Group2, levels=c(names(color_for_subtypes_vector)[order(names(color_for_subtypes_vector))], 'Other')))
+
+type_label <- unique(tumor_cl_clustering_results %>% 
+                       group_by(type) %>% 
+                       mutate(n_tumor_cl = n()) %>%
+                       ungroup() %>%
+                       mutate(type_label = paste0(type, " (n=", n_tumor_cl, ")")) %>%
+                       pull(type_label)
+)
+names(type_label) <- gsub(" [(].*","",type_label)
+Group2_label <- unique(tumor_cl_clustering_results %>% 
+                         group_by(Group2) %>% 
+                         dplyr::count(type) %>%
+                         ungroup() %>%
+                         spread(., type, n) %>%
+                         mutate(type_label = paste0(Group2, " (CL n=", CL, ", tumor n=", tumor,")")) %>%
+                         pull(type_label)
+)
+names(Group2_label) <- gsub(" [(].*","",Group2_label)
+
+alpha_for_subtype <- color_for_subtypes_vector %>% names() %>% setNames(rep(0.5, length(.)), .)
+
+final_plot_peds_only <- ggplot(tumor_cl_clustering_results %>% dplyr::filter(type == "tumor"),
+                               aes(UMAP_1, UMAP_2, color=Group2, fill=Group2, shape=type, size=type, alpha=Group2, text=sampleID)) +
+  # So the legned order is correct
+  geom_point(color="white") +
+  geom_point(data = tumor_cl_clustering_results %>% dplyr::filter(type == "CL"), color = "white") + 
+  guides(
+    fill=guide_legend(title='Tumor type', override.aes = list(alpha=1, size=4, shape=21)), 
+    color=F, 
+    shape=guide_legend(title='Sample type', override.aes = list(color='black', fill='black', alpha=1, size=4)), 
+    alpha=F, 
+    size=F
+  ) +
+  xlab('1st UMAP component') + ylab('2nd UMAP component') +
+  ggtitle('Expression UMAP') +
+  # geom_text_repel(data=tumor_cl_clustering_results %>% filter(type=='CL', Group != 'CL'), aes(label=gsub('_.*', '', sampleID)), size=2) +
+  scale_color_manual(values=c('Other'='gray', color_for_subtypes_vector), labels = Group2_label) +
+  scale_fill_manual(values=c('Other'='gray', color_for_subtypes_vector), labels = Group2_label) +
+  scale_shape_manual(values=c('tumor'=21, 'CL'=24), labels = type_label) +
+  scale_alpha_manual(values=c('Other'=0.8, alpha_for_subtype)) + 
+  scale_size_manual(values=c('tumor'=0.75, 'CL'=2)) +
+  theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank(), axis.text = element_blank(), axis.ticks = element_blank())
+
+final_plot_peds_only
+
+saveRDS(final_plot_peds_only, file = paste0('figures/tumor_cl/tumor_cl_rennotated_pediatrics_all', version_to_use, '.rds'))
+ggsave(final_plot_peds_only, filename = 'figures/tumor_cl/tumor_cl_rennotated_pediatrics_all.pdf', height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+```
+
+## Prior to cellinger
+
+```{r}
+tumor_cl_clustering_results_uncorrected <- read.table('Celligner/Celligner_uncorrected_projection.csv', 
+                                                      quote = "", sep=",", header = T) 
+
+tumor_cl_clustering_results_uncorrected %<>% left_join(., mf %>% dplyr::select(sampleID=CCLE_name, Type), by='sampleID') %>%
+  mutate(subtype = ifelse(sampleID == "CHLA57_BONE", NA, subtype)) %>%
+  mutate(Group=ifelse(Type %in% pediatric_types, Type, type)) %>%
+  mutate(tissue=case_when(
+    Type=='Rhabdoid'~'Rhabdoid', 
+    TRUE~tissue
+  ))
+
+# Edit tumors types that are in the same section
+tumor_cl_clustering_results_uncorrected %<>% mutate(Group=case_when(
+  tissue %in% names(quick_primary_site_map) ~ quick_primary_site_map[tissue],
+  subtype %in% names(quick_primary_site_map) ~ quick_primary_site_map[subtype],
+  sampleID %in% pediatric_glioma$th_sampleid ~ "Pediatric Glioma",
+  sampleID %in% pediatric_germcell$th_sampleid ~ "Pediatric Germ Cell",
+  sampleID %in% pediatric_sarcoma$th_sampleid ~ "Pediatric Sarcoma",
+  TRUE ~ Group
+))
+
+tumor_cl_clustering_results_uncorrected %<>% 
+  mutate(Group2=ifelse(Group %in% c('CL', 'tumor'), 'Other', Group)) %>%
+  mutate(Group2=factor(Group2, levels=c(names(color_for_subtypes_vector)[order(names(color_for_subtypes_vector))], 'Other')))
+```
+
+
+The plot below is the output without using cellinger using UMAP
+
+```{r include=TRUE, fig.width=10}
+type_label <- unique(tumor_cl_clustering_results_uncorrected %>% 
+                       group_by(type) %>% 
+                       mutate(n_tumor_cl = n()) %>%
+                       ungroup() %>%
+                       mutate(type_label = paste0(type, " (n=", n_tumor_cl, ")")) %>%
+                       pull(type_label)
+                     )
+names(type_label) <- gsub(" [(].*","",type_label)
+Group2_label <- unique(tumor_cl_clustering_results_uncorrected %>% 
+                       group_by(Group2) %>% 
+                       dplyr::count(type) %>%
+                       ungroup() %>%
+                       spread(., type, n) %>%
+                       mutate(type_label = paste0(Group2, " (CL n=", CL, ", tumor n=", tumor,")")) %>%
+                       pull(type_label)
+                     )
+names(Group2_label) <- gsub(" [(].*","",Group2_label)
+
+alpha_for_subtype <- color_for_subtypes_vector %>% names() %>% setNames(rep(0.5, length(.)), .)
+
+final_plot <- ggplot(tumor_cl_clustering_results_uncorrected %>% dplyr::filter(type == "tumor") %>% arrange(desc(Group2)), 
+                     aes(UMAP_1, UMAP_2, color=Group2, fill=Group2, shape=type, size=type, alpha=Group2, text=sampleID)) +
+  # So the legned order is correct
+  geom_point(color="white") +
+  geom_point(data = tumor_cl_clustering_results_uncorrected %>% dplyr::filter(type == "CL") %>% arrange(desc(Group2)), color = "white") + 
+  guides(
+    fill=guide_legend(title='Tumor type', override.aes = list(alpha=1, size=4, shape=21)), 
+    color=F, 
+    shape=guide_legend(title='Sample type', override.aes = list(color='black', fill='black', alpha=1, size=4)), 
+    alpha=F, 
+    size=F
+  ) +
+  xlab('1st UMAP component') + ylab('2nd UMAP component') +
+  ggtitle('Expression UMAP') +
+  # geom_text_repel(data=tumor_cl_clustering_results_uncorrected %>% filter(type=='CL', Group != 'CL'), aes(label=gsub('_.*', '', sampleID)), size=2) +
+  scale_color_manual(values=c('Other'='gray', color_for_subtypes_vector), labels = Group2_label) +
+  scale_fill_manual(values=c('Other'='gray', color_for_subtypes_vector), labels = Group2_label) +
+  scale_shape_manual(values=c('tumor'=21, 'CL'=24), labels = type_label) +
+  scale_alpha_manual(values=c('Other'=0.8, alpha_for_subtype)) + 
+  scale_size_manual(values=c('tumor'=0.75, 'CL'=2)) +
+  theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank(), axis.text = element_blank(), axis.ticks = element_blank())
+
+final_plot
+
+saveRDS(final_plot, file = paste0('figures/tumor_cl/tumor_cl_reannotated_uncorrected', version_to_use, '.rds'))
+ggsave(final_plot, filename = 'figures/tumor_cl/tumor_cl_reannotated_uncorrected.pdf', height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+```
+
+
+```{r include=TRUE, fig.width=10}
+type_label <- unique(tumor_cl_clustering_results_uncorrected %>% filter(Group2 != "Other") %>% 
+                       group_by(type) %>% 
+                       mutate(n_tumor_cl = n()) %>%
+                       ungroup() %>%
+                       mutate(type_label = paste0(type, " (n=", n_tumor_cl, ")")) %>%
+                       pull(type_label)
+                     )
+names(type_label) <- gsub(" [(].*","",type_label)
+Group2_label <- unique(tumor_cl_clustering_results_uncorrected %>% filter(Group2 != "Other") %>% 
+                       group_by(Group2) %>% 
+                       dplyr::count(type) %>%
+                       ungroup() %>%
+                       spread(., type, n) %>%
+                       mutate(type_label = paste0(Group2, " (CL n=", CL, ", tumor n=", tumor,")")) %>%
+                       pull(type_label)
+                     )
+names(Group2_label) <- gsub(" [(].*","",Group2_label)
+
+final_plot_peds_only <- ggplot(tumor_cl_clustering_results_uncorrected %>% filter(Group2 != "Other") %>% dplyr::filter(type == "tumor"),
+                               aes(UMAP_1, UMAP_2, color=Group2, fill=Group2, shape=type, size=type, alpha=Group2, text=sampleID)) +
+  # So the legned order is correct
+  geom_point(color="white") +
+  geom_point(data = tumor_cl_clustering_results_uncorrected %>% filter(Group2 != "Other") %>% dplyr::filter(type == "CL"), color = "white") + 
+  guides(
+    fill=guide_legend(title='Tumor type', override.aes = list(alpha=1, size=4, shape=21)), 
+    color=F, 
+    shape=guide_legend(title='Sample type', override.aes = list(color='black', fill='black', alpha=1, size=4)), 
+    alpha=F, 
+    size=F
+  ) +
+  xlab('1st UMAP component') + ylab('2nd UMAP component') +
+  ggtitle('Expression UMAP') +
+  # geom_text_repel(data=tumor_cl_clustering_results %>% filter(type=='CL', Group != 'CL'), aes(label=gsub('_.*', '', sampleID)), size=2) +
+  scale_color_manual(values=c('Other'='gray', color_for_subtypes_vector), labels = Group2_label) +
+  scale_fill_manual(values=c('Other'='gray', color_for_subtypes_vector), labels = Group2_label) +
+  scale_shape_manual(values=c('tumor'=21, 'CL'=24), labels = type_label) +
+  scale_alpha_manual(values=c('Other'=0.8, alpha_for_subtype)) + 
+  scale_size_manual(values=c('tumor'=0.75, 'CL'=2)) +
+  theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank(), axis.text = element_blank(), axis.ticks = element_blank())
+
+final_plot_peds_only
+
+saveRDS(final_plot_peds_only, file = paste0('figures/tumor_cl/tumor_cl_rennotated_pediatrics_only_uncorrected', version_to_use, '.rds'))
+ggsave(final_plot_peds_only, filename = 'figures/tumor_cl/tumor_cl_rennotated_pediatrics_only_uncorrected.pdf', height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+```
+
+
+
+```{r include=TRUE}
+for (typetoplot in unique(tumor_cl_clustering_results_uncorrected$Group2))
+{
+  if (typetoplot != "Other")
+  {
+    tumor_cl_to_plot <- tumor_cl_clustering_results_uncorrected %>% filter(Group2 == typetoplot)
+    type_label <- unique(tumor_cl_to_plot %>% 
+                           group_by(type) %>% 
+                           mutate(n_tumor_cl = n()) %>%
+                           ungroup() %>%
+                           mutate(type_label = paste0(type, " (n=", n_tumor_cl, ")")) %>%
+                           pull(type_label)
+    )
+    names(type_label) <- gsub(" [(].*","",type_label)
+    Group2_label <- unique(tumor_cl_to_plot %>% 
+                             group_by(Group2) %>% 
+                             dplyr::count(type) %>%
+                             ungroup() %>%
+                             spread(., type, n) %>%
+                             mutate(type_label = ifelse(grepl("tumor", Group2),
+                                                        paste0(Group2, " (CL n=", CL, ", tumor n=", tumor,")"), 
+                                                        paste0(Group2, " (CL n=", CL, ")"))) %>%
+                             pull(type_label)
+    )
+    names(Group2_label) <- gsub(" [(].*","",Group2_label)
+    
+    alpha_for_subtype <- color_for_subtypes_vector %>% names() %>% setNames(rep(0.5, length(.)), .)
+    
+    final_plot <- ggplot(tumor_cl_to_plot %>% dplyr::filter(type == "tumor"), 
+                         aes(UMAP_1, UMAP_2, color=Group2, fill=Group2, shape=type, size=type, alpha=Group2, text=sampleID)) +
+      # So the legned order is correct
+      geom_point(color="white") +
+      geom_point(data = tumor_cl_to_plot %>% dplyr::filter(type == "CL"), color = "white") + 
+      guides(
+        fill=guide_legend(title='Tumor type', override.aes = list(alpha=1, size=4, shape=21)), 
+        color=F,  
+        shape=guide_legend(title='Sample type', override.aes = list(color='black', fill='black', alpha=1, size=4)), 
+        alpha=F, 
+        size=F
+      ) +
+      xlab('1st UMAP component') + ylab('2nd UMAP component') +
+      ggtitle('Expression UMAP') +
+      scale_color_manual(values=c('Adult'='gray', color_for_subtypes_vector), labels = Group2_label) +
+      scale_fill_manual(values=c('Adult'='gray', color_for_subtypes_vector)) +
+      scale_shape_manual(values=c('tumor'=21, 'CL'=24), labels = type_label) +
+      scale_alpha_manual(values=c('Adult'=0.8, alpha_for_subtype)) + 
+      scale_size_manual(values=c('tumor'=0.75, 'CL'=2)) + 
+      geom_text_repel(data= tumor_cl_to_plot %>% filter(type=="CL"), aes(UMAP_1, UMAP_2, label = gsub("_.*", "",sampleID))) +
+      theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank())
+    
+    print(final_plot)
+ 
+    saveRDS(final_plot, file = paste0('figures/tumor_cl/tumor_cl_reannotated_uncorrected_',typetoplot, version_to_use, '.rds'))
+    ggsave(final_plot, filename = paste0('figures/tumor_cl/tumor_cl_reannotated_uncorrected_',typetoplot,'.pdf'), height = 6, width = 8, useDingbats=FALSE)
+  }
+}
+```
+
+## Undifferentiated cluster
+
+```{r include=TRUE}
+undifferentiated_cluster <- fread('Celligner/undifferentiated_cluster_07022020.csv') 
+
+tumor_cl_umap <- fread("Celligner/updated_Celligner_pediatric_added.csv")
+tumor_cl_clustering_results <- dplyr::full_join(mf_combined, 
+                                                tumor_cl_umap,
+                                                by = "sampleID") %>%
+  dplyr::filter(!is.na(UMAP_1)) %>%
+  dplyr::rename(Group2=Type) %>%
+  dplyr::mutate(Group2=ifelse(Group2 %in% pediatric_types, 
+                              Group2, 
+                              "Other")) %>%
+  dplyr::mutate(subtype = ifelse(sampleID == "CHLA57_BONE", NA, subtype)) %>%
+  dplyr::mutate(Group2=factor(Group2, levels=c(names(color_for_subtypes_vector)[order(names(color_for_subtypes_vector))], 'Other'))) %>%
+  dplyr::mutate(DepMap_ID = ifelse(is.na(DepMap_ID) | DepMap_ID == "", sampleID, DepMap_ID)) %>%
+  dplyr::left_join(., undifferentiated_cluster %>% 
+                     dplyr::mutate(undifferentiated = "undifferentiated", DepMap_ID = sampleID) %>% 
+                     dplyr::select(DepMap_ID, undifferentiated), by = "DepMap_ID")
+
+type_label <- unique(tumor_cl_clustering_results %>% 
+                       group_by(type) %>% 
+                       mutate(n_tumor_cl = n()) %>%
+                       ungroup() %>%
+                       mutate(type_label = paste0(type, " (n=", n_tumor_cl, ")")) %>%
+                       pull(type_label)
+)
+names(type_label) <- gsub(" [(].*","",type_label)
+Group2_label <- unique(tumor_cl_clustering_results %>% 
+                         group_by(Group2) %>% 
+                         dplyr::count(type) %>%
+                         ungroup() %>%
+                         spread(., type, n) %>%
+                         mutate(type_label = paste0(Group2, " (CL n=", CL, ", tumor n=", tumor,")")) %>%
+                         pull(type_label)
+)
+names(Group2_label) <- gsub(" [(].*","",Group2_label)
+
+alpha_for_subtype <- color_for_subtypes_vector %>% names() %>% setNames(rep(0.5, length(.)), .)
+
+final_plot_peds_only <- ggplot(tumor_cl_clustering_results %>% dplyr::filter(type == "tumor"),
+                               aes(UMAP_1, UMAP_2, color=is.na(undifferentiated), fill=Group2, shape=type, size=type, alpha=Group2, text=sampleID)) +
+  # So the legned order is correct
+  geom_point() +
+  geom_point(data = tumor_cl_clustering_results %>% dplyr::filter(type == "CL")) + 
+  guides(
+    fill=guide_legend(title='Tumor type', override.aes = list(alpha=1, size=4, shape=21)), 
+    color=F, 
+    shape=guide_legend(title='Sample type', override.aes = list(color='black', fill='black', alpha=1, size=4)), 
+    alpha=F, 
+    size=F
+  ) +
+  xlab('1st UMAP component') + ylab('2nd UMAP component') +
+  ggtitle('Expression UMAP') +
+  # geom_text_repel(data=tumor_cl_clustering_results %>% filter(type=='CL', Group != 'CL'), aes(label=gsub('_.*', '', sampleID)), size=2) +
+  scale_color_manual(values=c('black', 'white'), labels = c('Undifferentiated cluster', 'Other')) +
+  scale_fill_manual(values=c('Other'='gray', color_for_subtypes_vector), labels = Group2_label) +
+  scale_shape_manual(values=c('tumor'=21, 'CL'=24), labels = type_label) +
+  scale_alpha_manual(values=c('Other'=0.8, alpha_for_subtype)) + 
+  scale_size_manual(values=c('tumor'=0.75, 'CL'=2)) +
+  theme_Publication() + theme(legend.justification = 'top', panel.grid = element_blank(), axis.text = element_blank(), axis.ticks = element_blank())
+
+final_plot_peds_only
+
+saveRDS(final_plot_peds_only, file = paste0('figures/tumor_cl/undiff_tumor_cl_rennotated_pediatrics_all', version_to_use, '.rds'))
+ggsave(final_plot_peds_only, filename = 'figures/tumor_cl/undiff_tumor_cl_rennotated_pediatrics_all.pdf', height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+```
+
+```{r include=TRUE}
+tumor_cl_clustering_results %>% 
+  dplyr::filter(!is.na(PvA)) %>%
+  dplyr::group_by(PvA, type, undifferentiated) %>% 
+  dplyr::summarise(n = n()) %>%
+  datatable(options=list(scrollX=T))
+```
+
+```{r include=TRUE}
+tumor_cl_clustering_results %>% 
+  dplyr::filter(!is.na(PvA)) %>%
+  dplyr::group_by(Group2, type, undifferentiated) %>% 
+  dplyr::summarise(n = n()) %>%
+  datatable(options=list(scrollX=T))
+```
+
+## Assigned tumor types to cell lines and confidence metrics
+
+```{r include=T, fig.height=4}
+CL_assignments <- fread('Celligner/PedDep_Celligner_results.csv') 
+mf_with_assignments <- left_join(mf, CL_assignments %>% dplyr::rename(CCLE_name = sampleID), by = "CCLE_name")
+
+mf_with_assignments %<>% dplyr::group_by(cancer_type, PvA) %>%
+  dplyr::add_count(cancer_type) %>%
+  dplyr::mutate(Celligner_correct = sum(Celligner_class == cancer_type | Celligner_class == Type)) %>%
+  dplyr::mutate(RF_correct = sum(RF_class == cancer_type | RF_class == Type)) %>%
+  dplyr::mutate(MNN_correct = sum(uncorrected_tumor_class == cancer_type | uncorrected_tumor_class == Type, na.rm = T)) 
+
+
+ggplot(mf_with_assignments %>% 
+         dplyr::select(cancer_type, PvA, n, Celligner_correct, MNN_correct, RF_correct) %>%
+         unique() %>%
+         dplyr::filter(n >= 5) %>%
+         dplyr::filter(!is.na(cancer_type) & cancer_type != "fibroblast") %>%
+         tidyr::pivot_longer(cols = c(4,5,6)) %>%
+         dplyr::ungroup() %>%
+         dplyr::mutate(cancer_type = factor(cancer_type, levels = rev(sort(unique(cancer_type))))), 
+       aes(x = cancer_type, y = value/n, fill = name)) +
+  geom_col(position = "dodge", color = "black") +
+  xlab("Tumor type") + ylab("% correctly classified") +
+  coord_flip() +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='right', 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  facet_wrap(~PvA, scales = "free") 
+```
+
+```{r include=T}
+ggplot(mf_with_assignments %>% 
+         dplyr::ungroup() %>%
+         dplyr::filter(!is.na(type), PvA != "Fibroblast") %>%
+         dplyr::add_count(PvA) %>%
+         dplyr::group_by(PvA) %>%
+         dplyr::mutate(Celligner_correct = sum(Celligner_class == cancer_type | Celligner_class == Type, na.rm = T)) %>%
+         dplyr::mutate(RF_correct = sum(RF_class == cancer_type | RF_class == Type, na.rm = T)) %>%
+         dplyr::mutate(MNN_correct = sum(uncorrected_tumor_class == cancer_type | uncorrected_tumor_class == Type, na.rm = T)) %>%
+         dplyr::select(PvA, n, Celligner_correct, RF_correct, MNN_correct) %>%
+         unique() %>%
+         tidyr::pivot_longer(cols = c(3,4,5)) %>%
+         dplyr::ungroup(), 
+       aes(x = PvA, y = value/n, fill = name)) +
+  geom_col(position = "dodge", color = "black") +
+  xlab("Tumor type") + ylab("% correctly classified") +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='right', 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+```
+
+```{r include=T}
+mf_with_assignments %>% 
+  dplyr::ungroup() %>%
+  dplyr::filter(!is.na(type), PvA != "Fibroblast") %>%
+  dplyr::add_count(PvA) %>%
+  dplyr::group_by(PvA) %>%
+  dplyr::mutate(Celligner_correct = sum(Celligner_class == cancer_type | Celligner_class == Type, na.rm = T)) %>%
+  dplyr::mutate(RF_correct = sum(RF_class == cancer_type | RF_class == Type, na.rm = T)) %>%
+  dplyr::mutate(MNN_correct = sum(uncorrected_tumor_class == cancer_type | uncorrected_tumor_class == Type, na.rm = T)) %>%
+  dplyr::mutate(Celligner_correct_conf = sum((Celligner_class == cancer_type | Celligner_class == Type) & 
+                                               Celligner_class_confidence > 0.6, na.rm = T)) %>%
+  dplyr::mutate(RF_correct_conf = sum((RF_class == cancer_type | RF_class == Type) & 
+                                        RF_probability > 0.6, na.rm = T)) %>%
+  dplyr::mutate(MNN_correct_conf = sum((uncorrected_tumor_class == cancer_type | uncorrected_tumor_class == Type) & 
+                                         uncorrected_tumor_prop > 0.6, na.rm = T)) %>%
+  dplyr::select(PvA, n, Celligner_correct, RF_correct, MNN_correct, Celligner_correct_conf, RF_correct_conf, MNN_correct_conf) %>%
+  unique() %>%
+  tidyr::pivot_longer(cols = c(3,4,5,6,7,8)) %>%
+  dplyr::ungroup() %>%
+  datatable(options=list(scrollX=T))
+```
+
+```{r include=T}
+# ggplot(mf_with_assignments %>% 
+#          dplyr::ungroup() %>%
+#          dplyr::filter(!is.na(type), PvA != "Fibroblast") %>%
+#          dplyr::add_count(PvA) %>%
+#          dplyr::group_by(DepMap_ID) %>%
+#          dplyr::mutate(Celligner_correct = sum(Celligner_class == cancer_type | Celligner_class == Type, na.rm = T)) %>%
+#          dplyr::mutate(RF_correct = sum(RF_class == cancer_type | RF_class == Type, na.rm = T)) %>%
+#          dplyr::select(DepMap_ID, PvA, n, Celligner_class_confidence, RF_probability, Celligner_correct, RF_correct) %>%
+#          unique() %>%
+#          tidyr::pivot_longer(cols = c(6,7)) %>%
+#          dplyr::ungroup() %>%
+#          dplyr::filter(name == "Celligner_correct") %>%
+#          dplyr::arrange(desc(Celligner_class_confidence)), 
+#        aes(x = PvA, y = value/n, fill = Celligner_class_confidence)) +
+#   geom_col() +
+#   xlab("Tumor type") + ylab("% correctly classified") +
+#   theme_Publication() +
+#   theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='right', 
+#         panel.border = element_blank(), panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+# 
+# ggplot(mf_with_assignments %>% 
+#          dplyr::ungroup() %>%
+#          dplyr::filter(!is.na(type), PvA != "Fibroblast") %>%
+#          dplyr::add_count(PvA) %>%
+#          dplyr::group_by(DepMap_ID) %>%
+#          dplyr::mutate(Celligner_correct = sum(Celligner_class == cancer_type | Celligner_class == Type, na.rm = T)) %>%
+#          dplyr::mutate(RF_correct = sum(RF_class == cancer_type | RF_class == Type, na.rm = T)) %>%
+#          dplyr::select(DepMap_ID, PvA, n, Celligner_class_confidence, RF_probability, Celligner_correct, RF_correct) %>%
+#          unique() %>%
+#          tidyr::pivot_longer(cols = c(6,7)) %>%
+#          dplyr::ungroup() %>%
+#          dplyr::filter(name == "RF_correct") %>%
+#          dplyr::arrange(desc(RF_probability)), 
+#        aes(x = PvA, y = value/n, fill = RF_probability)) +
+#   geom_col() +
+#   xlab("Tumor type") + ylab("% correctly classified") +
+#   theme_Publication() +
+#   theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='right', 
+#         panel.border = element_blank(), panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+
+ggplot(mf_with_assignments %>% 
+         dplyr::ungroup() %>%
+         dplyr::filter(!is.na(type), !is.na(cancer_type), PvA != "Fibroblast") %>%
+         dplyr::add_count(PvA) %>%
+         dplyr::group_by(DepMap_ID) %>%
+         dplyr::mutate(Celligner_correct = sum(Celligner_class == cancer_type | Celligner_class == Type, na.rm = T)) %>%
+         dplyr::mutate(RF_correct = sum(RF_class == cancer_type | RF_class == Type, na.rm = T)) %>%
+         dplyr::mutate(MNN_correct = sum(uncorrected_tumor_class == cancer_type | uncorrected_tumor_class == Type, na.rm = T)) %>%
+         dplyr::select(DepMap_ID, PvA, n, Celligner_class_confidence, uncorrected_tumor_prop, RF_probability, Celligner_correct, MNN_correct, RF_correct) %>%
+         unique() %>%
+         tidyr::pivot_longer(cols = c(7,8,9)) %>%
+         dplyr::ungroup() %>%
+         dplyr::mutate(category = paste(PvA, name)) %>%
+         dplyr::mutate(value2 = ifelse(name == "Celligner_correct", Celligner_class_confidence, 
+                                       ifelse(name == "MNN_correct", uncorrected_tumor_prop, RF_probability))) %>%
+         dplyr::arrange(desc(value2)), 
+       aes(x = category, y = value/n, fill = value2)) +
+  geom_col() +
+  xlab("Tumor type") + ylab("% correctly classified") +
+  scale_fill_continuous(name = "Celligner\nconfidence\nor RF\nprobability") +
+  scale_x_discrete(labels=c("Adult Celligner_correct" = "Adult Celligner",
+                            "Adult RF_correct" = "Adult RF",
+                            "Pediatric Celligner_correct" = "Pediatric Celligner",
+                            "Pediatric RF_correct" = "Pediatric RF",
+                            "Adult MNN_correct" = "Adult MNN-only",
+                            "Pediatric MNN_correct" = "Pediatric MNN-only")) +
+  theme_Publication() +
+  theme(legend.position='right', 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(angle = 45, hjust = 1)) 
+```
+
+```{r include=T, fig.height=6, fig.width=5}
+ggplot(mf_with_assignments %>% 
+         dplyr::ungroup() %>%
+         dplyr::filter(!is.na(type), !is.na(cancer_type), PvA != "Fibroblast") %>%
+         dplyr::mutate(cancer_type = ifelse(CCLE_name == "G402_SOFT_TISSUE", "Rhabdoid", cancer_type)) %>%
+         dplyr::add_count(cancer_type, PvA) %>%
+         dplyr::filter(n >= 5) %>%
+         dplyr::group_by(DepMap_ID) %>%
+         dplyr::mutate(Celligner_correct = sum(Celligner_class == cancer_type | Celligner_class == Type, na.rm = T)) %>%
+         dplyr::mutate(RF_correct = sum(RF_class == cancer_type | RF_class == Type, na.rm = T)) %>%
+         dplyr::select(DepMap_ID, PvA, cancer_type, n, Celligner_class_confidence, RF_probability, Celligner_correct, RF_correct) %>%
+         unique() %>%
+         tidyr::pivot_longer(cols = c(7,8)) %>%
+         dplyr::ungroup() %>%
+         dplyr::mutate(category = paste0(cancer_type, "\n", gsub("Celligner", "CL", gsub("_correct", "", name)))) %>%
+         dplyr::mutate(category = factor(category, levels = rev(sort(unique(category))))) %>%
+         dplyr::mutate(value2 = ifelse(name == "Celligner_correct", Celligner_class_confidence, RF_probability)) %>%
+         dplyr::arrange(desc(value2)), 
+       aes(x = category, y = value/n, fill = value2)) +
+  geom_col() +
+  coord_flip() +
+  xlab("Tumor type") + ylab("% correctly classified") +
+  scale_fill_continuous(name = "Celligner\nconfidence\nor RF\nprobability") +
+  scale_x_discrete(labels=c("Adult Celligner_correct" = "Adult Celligner",
+                            "Adult RF_correct" = "Adult RF",
+                            "Pediatric Celligner_correct" = "Pediatric Celligner",
+                            "Pediatric RF_correct" = "Pediatric RF")) +
+  theme_Publication() +
+  theme(legend.position='right', 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  facet_wrap(~PvA, scales = "free", ncol = 2)
+```
+
+
+```{r include=T}
+mf_with_assignments %>% 
+  dplyr::ungroup() %>%
+  dplyr::filter(PvA == "Pediatric", !is.na(cancer_type)) %>%
+  dplyr::select(DepMap_ID, CCLE_name, Type, dplyr::starts_with("RF"), dplyr::starts_with("Celli"), -RF_correct, -Celligner_correct) %>%
+  datatable(options=list(scrollX=T))
+```
+
+## Session Info
+
+```{r session_info, include=TRUE, echo=TRUE, results='markup'}
+devtools::session_info()
+```
+
+```{r include=TRUE}
+as.data.frame(`Dataset Used`) %>% datatable(options=list(scrollX=T))
+```

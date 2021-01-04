@@ -1,0 +1,722 @@
+---
+title: "Predictive Features Figures"
+author: "Neekesh Dharia & Guillaume Kugener"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include=FALSE, message=FALSE, warning = FALSE)
+source('setup.R')
+source('load_data.R')
+```
+
+
+# Generated using: `r toupper(version_to_use)`
+
+
+```{r load_needed_datasets}
+# This script uses the following datasets:
+mf <- mf
+gene_dependency <- load_gene_dependency()
+gene_effect <- load_gene_effect()
+gene_expression <- load_gene_expression()
+gene_cn <- load_gene_cn()
+gene_lrt_table <- load_lrt_table()
+achilles_common_essentials <- load_achilles_common_essentials()
+
+if(!dir.exists('figures')) { dir.create('figures') }
+if(!dir.exists('figures/biomarkers')) { dir.create('figures/biomarkers') }
+```
+
+
+The table below highlights all of the cell lines that are included in the analyses and the types that they are annotated as:
+
+```{r}
+cell_lines_included_table <- rbind(
+  data.frame(name=row.names(gene_dependency), stringsAsFactors = F) %>% mutate(Source='Dependency'),
+  data.frame(name=row.names(gene_expression), stringsAsFactors = F) %>% mutate(Source='Expression')
+) %>% mutate(value=1) %>% mutate(DepMap_ID=name) %>%
+  spread(., Source, value) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, CCLE_name, Type), by='DepMap_ID') %>%
+  dplyr::select(DepMap_ID, CCLE_name, everything())
+```
+
+```{r include=TRUE} 
+cell_lines_included_table %>% datatable(options=list(scrollX=T))
+```
+
+# Overview
+
+* Evaluate predictive features for selective dependencies
+
+```{r}
+biomarkers <- fread("ensemble_prediction/Avana-solid-ensemble.csv")
+biomarkers_peds <- fread("ensemble_prediction/Avana-pediatric-ensemble.csv")
+
+biomarkers_top <- biomarkers %>% 
+  dplyr::ungroup() %>% 
+  dplyr::group_by(gene) %>% 
+  dplyr::top_n(n = 1, pearson) %>%
+  dplyr::ungroup() %>% 
+  dplyr::mutate(percentile = rank(pearson) / 18333)
+biomarkers_peds_top <- biomarkers_peds %>% 
+  dplyr::ungroup() %>% 
+  dplyr::group_by(gene) %>% 
+  dplyr::top_n(n = 1, pearson) %>%
+  dplyr::ungroup() %>% 
+  dplyr::mutate(percentile = rank(pearson) / 18333)
+```
+
+```{r}
+lrt_genes <- gene_lrt_table %>% filter((lrt) > 100, skewed_left) %$%
+  gene
+
+achilles_non_essentials <- colSums(gene_dependency >= 0.5, na.rm = T)
+achilles_non_essentials <- names(achilles_non_essentials[achilles_non_essentials == 0])
+
+lrt_genes_ceres <- lrt_genes
+lrt_genes_ceres <- lrt_genes_ceres[!(lrt_genes_ceres %in% c(achilles_non_essentials, achilles_common_essentials$gene))]
+
+dist_biomarkers <- ggplot(full_join(biomarkers_top, biomarkers_peds_top, 
+                 by = "gene", suffix = c(".all", ".peds")) %>% 
+         dplyr::filter(gene %in% lrt_genes_ceres), aes(pearson.peds)) +
+  geom_density(color = "red") + 
+  geom_density(data = full_join(biomarkers_top, biomarkers_peds_top, 
+                                by = "gene", suffix = c(".all", ".peds")) %>% 
+                 dplyr::filter(gene %in% lrt_genes_ceres), mapping = aes(pearson.all)) +
+  theme_bw() +
+  xlim(c(-.5, 1.0)) + 
+  xlab('Pearson correlation of predictive model') + ylab('Density') +
+  theme_Publication() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+saveRDS(dist_biomarkers, file = paste0('figures/biomarkers/pearson_dist_lrt_genes_', version_to_use, '.rds'))
+ggsave(dist_biomarkers, filename = paste0('figures/biomarkers/pearson_dist_lrt_genes_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+
+```{r}
+gene_dependency_adult <- gene_dependency[rownames(gene_dependency) %in% mf$DepMap_ID[mf$PvA == "Adult"],]
+gene_dependency_peds <- gene_dependency[rownames(gene_dependency) %in% mf$DepMap_ID[mf$PvA == "Pediatric"],]
+gene_effect_adult <- gene_effect[rownames(gene_effect) %in% mf$DepMap_ID[mf$PvA == "Adult"],]
+gene_effect_peds <- gene_effect[rownames(gene_effect) %in% mf$DepMap_ID[mf$PvA == "Pediatric"],]
+
+# Ratio of cell lines dependent on selective dependecies
+adult_lrt_rate <- colSums(gene_dependency_adult[, lrt_genes_ceres]>0.5, na.rm=T) / colSums(gene_dependency_adult[, lrt_genes_ceres]>=0, na.rm=T)
+pediatric_lrt_rate <- colSums(gene_dependency_peds[, lrt_genes_ceres]>0.5, na.rm=T) / colSums(gene_dependency_peds[, lrt_genes_ceres]>=0, na.rm=T)
+total_lrt_rate <- colSums(gene_dependency[, lrt_genes_ceres]>0.5, na.rm=T) / colSums(gene_dependency[, lrt_genes_ceres]>=0, na.rm=T)
+
+diff_lrt_rate <- pediatric_lrt_rate - adult_lrt_rate
+
+diff_lrt_rate_pvalue <- diff_lrt_rate
+
+for (gene in lrt_genes_ceres)
+{
+  gene <- as.character(gene)
+  diff_lrt_rate_pvalue[gene] <- fisher.test(matrix(c(sum(gene_dependency_adult[, gene]>0.5, na.rm=T),
+                                                     sum(gene_dependency_adult[, gene]>=0, na.rm=T), 
+                                                     sum(gene_dependency_peds[, gene]>0.5, na.rm=T),
+                                                     sum(gene_dependency_peds[, gene]>=0, na.rm=T)), 
+                                                   nrow = 2))$p.value
+}
+diff_lrt_rate_pvalue_adj <- p.adjust(diff_lrt_rate_pvalue, method = "BH")
+
+all_lrt_rate_by_type <- gather(as.data.frame(gene_dependency[, lrt_genes_ceres]) %>% 
+                                 dplyr::mutate(DepMap_ID = rownames(.)), Gene, dep, -DepMap_ID) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type, PvA), by='DepMap_ID') %>%
+  group_by(Gene, Type) %>% 
+  mutate(n = n()) %>%
+  mutate(n_dep = sum(dep >= 0.5, na.rm=T)) %>%
+  dplyr::select(Type, PvA, Gene, n, n_dep) %>%
+  unique() %>%
+  group_by(Gene, PvA) %>%
+  mutate(lrt_rate = sum(n_dep) / sum (n), n_PvA = sum(n_dep)) %>%
+  ungroup() %>%
+  mutate(type_lrt_rate = lrt_rate * n_dep / n_PvA) %>%
+  mutate(p.value = diff_lrt_rate_pvalue[Gene], p.value.adj = diff_lrt_rate_pvalue_adj[Gene]) 
+
+all_lrt_rate_by_type %<>% rbind(., 
+                                as.data.frame(cbind(names(diff_lrt_rate), diff_lrt_rate, diff_lrt_rate_pvalue, diff_lrt_rate_pvalue_adj)) %>% 
+                                  dplyr::rename(Gene = V1, type_lrt_rate = diff_lrt_rate,
+                                                p.value = diff_lrt_rate_pvalue, p.value.adj = diff_lrt_rate_pvalue_adj) %>% 
+                                  mutate(Type = ifelse(as.numeric(type_lrt_rate) > 0, "Differential_pos", "Differential_neg"), 
+                                         PvA = "Differential", 
+                                         n = NA, n_dep = NA, lrt_rate = type_lrt_rate, n_PvA = NA) %>%
+                                  dplyr::select((names(all_lrt_rate_by_type)))) %>%
+  filter(PvA != "Fibroblast") %>%
+  mutate(Group = ifelse(PvA == "Adult", "Fraction of\nadult lines\ndependent", 
+                        ifelse(PvA == "Pediatric", "Fraction of\npediatric lines\ndependent", 
+                               "Difference in\npediatric vs adult\nfraction"))) %>%
+  mutate(Group = factor(Group, levels = c("Fraction of\nadult lines\ndependent", 
+                                          "Fraction of\npediatric lines\ndependent", 
+                                          "Difference in\npediatric vs adult\nfraction"))) %>%
+  mutate(type_lrt_rate = as.numeric(type_lrt_rate), 
+         lrt_rate = as.numeric(lrt_rate)) %>% 
+  mutate(type_lrt_rate = ifelse(type_lrt_rate == "NaN", 0, type_lrt_rate)) %>%
+  dplyr::left_join(., as.data.frame(cbind(names(total_lrt_rate), total_lrt_rate)) %>% magrittr::set_colnames(c("Gene", "total_lrt_rate")), by = "Gene") %>%
+  dplyr::mutate(total_lrt_rate = as.numeric(total_lrt_rate))
+
+```
+
+```{r}
+lrt_rates_and_biomarkers_top <- full_join(
+  full_join(
+    full_join(
+      all_lrt_rate_by_type %>% 
+        dplyr::select(Gene, PvA, lrt_rate, total_lrt_rate, p.value.adj) %>% 
+        dplyr::filter(PvA != "Differential") %>% 
+        unique(), 
+      as.data.frame(cbind(names(diff_lrt_rate), diff_lrt_rate)) %>% magrittr::set_colnames(c("Gene", "diff_lrt_rate")), by = "Gene"), 
+    biomarkers_top %>% 
+      dplyr::rename(Gene = gene), by = "Gene"),
+  biomarkers_peds_top %>% 
+    dplyr::rename(Gene = gene), by = "Gene", suffix = c("", ".peds"))
+```
+
+
+### Predictive features for selective dependencies {.tabset .tabset-fade}
+
+#### Dependency rate versus predictive Pearson
+
+```{r include=T}
+genes_to_highlight <- c("MCL1 (4170)", #"BCL2 (596)",
+                        "CDK4 (1019)", #"CDK6 (1021)",
+                        "MDM2 (4193)", #"MDM4 (4194)",
+                        "ALK (238)", "BRAF (673)")
+
+lrt_biomarkers_plot <- ggplot(lrt_rates_and_biomarkers_top %>% 
+                                dplyr::filter(PvA == "Pediatric") %>%
+                                dplyr::mutate(color_highlight = Gene %in% genes_to_highlight), 
+                              aes(x = total_lrt_rate, y = pearson, 
+                                  label = Gene, size = lrt_rate, 
+                                  color = color_highlight)) + 
+  geom_point(alpha = 0.5) +
+  geom_text_repel(data = lrt_rates_and_biomarkers_top %>% 
+                     dplyr::filter(PvA == "Pediatric") %>%
+                     dplyr::filter(Gene %in% genes_to_highlight), 
+                   size = 2, color = "black",
+                   segment.size = 0.2, nudge_x = 0.05, nudge_y = 0.05) + 
+  scale_size(name = "Rate of selective\ndependency in\npediatric lines", breaks = seq(0, 1, 0.2), range = c(0,3)) +
+  scale_color_manual(values = c("gray", "red"), guide = F) + 
+  theme_bw() +
+  xlab('Rate of selective dependency') + ylab('Pearson correlation of predictive model') +
+  theme_Publication() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+lrt_biomarkers_plot
+
+saveRDS(lrt_biomarkers_plot, file = paste0('figures/biomarkers/lrt_rate_vs_biomarker_', version_to_use, '.rds'))
+ggsave(lrt_biomarkers_plot, filename = paste0('figures/biomarkers/lrt_rate_vs_biomarker_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+
+#### Pearson correlations - pediatric versus all
+
+```{r include=T}
+# genes_to_highlight <- lrt_rates_and_biomarkers_top %>% 
+#   dplyr::filter(pearson.peds > 0.5, pearson < 0.5) %>%
+#   dplyr::pull(Gene) %>%
+#   unique() 
+
+genes_to_highlight <- lrt_rates_and_biomarkers_top %>% 
+  dplyr::filter(grepl("^TRIM8 ", Gene) | grepl("^MYOD1 ", Gene) | grepl("^HDAC2 ", Gene) | grepl("^IGF1R ", Gene) |
+                  grepl("^CDK4 ", Gene) | grepl("^ALK ", Gene) | grepl("^MDM2 ", Gene) |
+                  grepl("^MCL1 ", Gene) | grepl("^BRAF ", Gene)) %>%
+  dplyr::pull(Gene) %>%
+  unique() 
+
+biomarkers_peds_vs_all_plot <- ggplot(lrt_rates_and_biomarkers_top %>% 
+                                        dplyr::filter(PvA == "Pediatric"), 
+                                      aes(x = pearson, y = pearson.peds, 
+                                          label = Gene, size = -log10(as.numeric(p.value.adj)), 
+                                          color = diff_lrt_rate > 0)) + 
+  geom_point(alpha = 0.5) +
+  # geom_hline(yintercept = 0.5, linetype = "dashed", color = "black") + 
+  # geom_vline(xintercept = 0.5, linetype = "dashed", color = "black") + 
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black") +
+  geom_label_repel(data = lrt_rates_and_biomarkers_top %>% 
+                     dplyr::filter(PvA == "Pediatric") %>%
+                     dplyr::filter(Gene %in% genes_to_highlight), 
+                   size = 3, color = "black", fill = rgb(1, 1, 1, 0.5),
+                   segment.size = 0.2, nudge_x = 0.05, nudge_y = 0.05) + 
+  scale_size(name = "-log10\n(adjusted\np-value)") +
+  scale_color_manual(values = c("gray", "red"), name = "Higher rate\nof dependency", labels = c("Adult", "Pediatric")) + 
+  theme_bw() +
+  xlab('Pearson correlation of predictive model\n(all cell lines)') + 
+  ylab('Pearson correlation of predictive model\n(pediatric lines only)') +
+  theme_Publication() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+biomarkers_peds_vs_all_plot
+
+saveRDS(biomarkers_peds_vs_all_plot, file = paste0('figures/biomarkers/biomarker_peds_vs_all_', version_to_use, '.rds'))
+ggsave(biomarkers_peds_vs_all_plot, filename = paste0('figures/biomarkers/biomarker_peds_vs_all_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+
+### Example predictive models {.tabset .tabset-fade}
+
+#### MCL1
+
+```{r include=T, fig.height=6, fig.width=4}
+genes_to_highlight <- lrt_rates_and_biomarkers_top %>% 
+  dplyr::filter(grepl("^MCL1 ", Gene)) %>%
+  dplyr::pull(Gene) %>%
+  unique() 
+
+gene_data <- lrt_rates_and_biomarkers_top %>% 
+                                     dplyr::filter(PvA == "Pediatric") %>%
+                                     dplyr::filter(Gene %in% genes_to_highlight) %>%
+                                     dplyr::select(Gene, dplyr::starts_with("feature")) %>%
+                                     tidyr::pivot_longer(cols = dplyr::contains("importance"), names_to = "cat", values_to = "importance") %>%
+                                     tidyr::pivot_longer(cols = dplyr::starts_with("feature"), names_to = "feature_name", values_to = "feature") %>%
+                                     dplyr::mutate(cat = gsub("_importance", "", cat)) %>%
+                                     dplyr::filter(cat == feature_name) %>%
+                                     dplyr::mutate(cat = ifelse(grepl(".peds", cat), "Peds", "All")) %>%
+                                     dplyr::mutate(feature_plot = paste0(feature_name, ";", feature))
+
+predictive_features_plot <- ggplot(gene_data %>% dplyr::filter(cat == "All"), 
+                                   aes(x = feature_plot, y = importance)) + 
+  geom_col(color = "gray", alpha = 0.5) +
+  theme_bw() +
+  scale_x_discrete(labels = function(x) { str_trunc(gsub(".*[;]", "", x), 30, side = "center", ellipsis = "...") }, name = "Feature") +
+  ylab('Feature importance') +
+  ggtitle(genes_to_highlight) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+  
+predictive_features_plot
+
+saveRDS(predictive_features_plot, file = paste0('figures/biomarkers/pred_features_', genes_to_highlight, version_to_use, '.rds'))
+ggsave(predictive_features_plot, filename = paste0('figures/biomarkers/pred_features_', genes_to_highlight, version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+#### IGF1R
+
+```{r include=T, fig.height=6, fig.width=4}
+genes_to_highlight <- lrt_rates_and_biomarkers_top %>% 
+  dplyr::filter(grepl("^IGF1R ", Gene)) %>%
+  dplyr::pull(Gene) %>%
+  unique() 
+
+gene_data <- lrt_rates_and_biomarkers_top %>% 
+                                     dplyr::filter(PvA == "Pediatric") %>%
+                                     dplyr::filter(Gene %in% genes_to_highlight) %>%
+                                     dplyr::select(Gene, dplyr::starts_with("feature")) %>%
+                                     tidyr::pivot_longer(cols = dplyr::contains("importance"), names_to = "cat", values_to = "importance") %>%
+                                     tidyr::pivot_longer(cols = dplyr::starts_with("feature"), names_to = "feature_name", values_to = "feature") %>%
+                                     dplyr::mutate(cat = gsub("_importance", "", cat)) %>%
+                                     dplyr::filter(cat == feature_name) %>%
+                                     dplyr::mutate(cat = ifelse(grepl(".peds", cat), "Peds", "All")) %>%
+                                     dplyr::mutate(feature_plot = paste0(feature_name, ";", feature))
+
+predictive_features_plot <- ggplot(gene_data %>% dplyr::filter(cat == "All"), 
+                                   aes(x = feature_plot, y = importance)) + 
+  geom_col(color = "gray", alpha = 0.5) +
+  theme_bw() +
+  scale_x_discrete(labels = function(x) { str_trunc(gsub(".*[;]", "", x), 30, side = "center", ellipsis = "...") }, name = "Feature") +
+  ylab('Feature importance') +
+  ggtitle(genes_to_highlight) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+  
+predictive_features_plot
+
+
+predictive_features_plot <- ggplot(gene_data, 
+                                   aes(x = feature_plot, y = importance)) + 
+  geom_col(color = "gray", alpha = 0.5) +
+  theme_bw() +
+  scale_x_discrete(labels = function(x) { str_trunc(gsub(".*[;]", "", x), 30, side = "center", ellipsis = "...") }, name = "Feature") +
+  ylab('Feature importance') +
+  ggtitle(genes_to_highlight) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  facet_grid(~cat, scales = "free")
+  
+
+predictive_features_plot
+
+saveRDS(predictive_features_plot, file = paste0('figures/biomarkers/pred_features_', genes_to_highlight, version_to_use, '.rds'))
+ggsave(predictive_features_plot, filename = paste0('figures/biomarkers/pred_features_', genes_to_highlight, version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+#### HDAC2
+
+```{r include=T, fig.height=6, fig.width=4}
+genes_to_highlight <- lrt_rates_and_biomarkers_top %>% 
+  dplyr::filter(grepl("^HDAC2 ", Gene)) %>%
+  dplyr::pull(Gene) %>%
+  unique() 
+
+gene_data <- lrt_rates_and_biomarkers_top %>% 
+                                     dplyr::filter(PvA == "Pediatric") %>%
+                                     dplyr::filter(Gene %in% genes_to_highlight) %>%
+                                     dplyr::select(Gene, dplyr::starts_with("feature")) %>%
+                                     tidyr::pivot_longer(cols = dplyr::contains("importance"), names_to = "cat", values_to = "importance") %>%
+                                     tidyr::pivot_longer(cols = dplyr::starts_with("feature"), names_to = "feature_name", values_to = "feature") %>%
+                                     dplyr::mutate(cat = gsub("_importance", "", cat)) %>%
+                                     dplyr::filter(cat == feature_name) %>%
+                                     dplyr::mutate(cat = ifelse(grepl(".peds", cat), "Peds", "All")) %>%
+                                     dplyr::mutate(feature_plot = paste0(feature_name, ";", feature))
+
+predictive_features_plot <- ggplot(gene_data %>% dplyr::filter(cat == "All"), 
+                                   aes(x = feature_plot, y = importance)) + 
+  geom_col(color = "gray", alpha = 0.5) +
+  theme_bw() +
+  scale_x_discrete(labels = function(x) { str_trunc(gsub(".*[;]", "", x), 30, side = "center", ellipsis = "...") }, name = "Feature") +
+  ylab('Feature importance') +
+  ggtitle(genes_to_highlight) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+  
+predictive_features_plot
+
+
+predictive_features_plot <- ggplot(gene_data, 
+                                   aes(x = feature_plot, y = importance)) + 
+  geom_col(color = "gray", alpha = 0.5) +
+  theme_bw() +
+  scale_x_discrete(labels = function(x) { str_trunc(gsub(".*[;]", "", x), 30, side = "center", ellipsis = "...") }, name = "Feature") +
+  ylab('Feature importance') +
+  ggtitle(genes_to_highlight) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  facet_grid(~cat, scales = "free")
+  
+
+predictive_features_plot
+
+saveRDS(predictive_features_plot, file = paste0('figures/biomarkers/pred_features_', genes_to_highlight, version_to_use, '.rds'))
+ggsave(predictive_features_plot, filename = paste0('figures/biomarkers/pred_features_', genes_to_highlight, version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+
+### Example predictive model scatter plots {.tabset .tabset-fade}
+
+#### MCL1 - BCL2L1
+
+```{r include=T}
+genes_to_highlight <- "MCL1_BCL2L1"
+
+data_to_plot <- left_join(
+  left_join(mf, 
+            as.data.frame(cbind(rownames(gene_effect), gene_effect[,"MCL1 (4170)",drop=F])) %>% 
+              set_colnames(c("DepMap_ID", "gene_effect")), by = "DepMap_ID"),
+  as.data.frame(cbind(rownames(gene_expression), gene_expression[,"BCL2L1 (598)",drop=F])) %>% 
+    set_colnames(c("DepMap_ID", "gene_expression")), by = "DepMap_ID") %>%
+  dplyr::mutate(gene_effect = as.numeric(gene_effect), 
+                gene_expression = as.numeric(gene_expression))
+  
+
+biomarker_scatter_plot <- ggplot(data_to_plot %>% filter(!is.na(gene_effect), !is.na(gene_expression)), 
+                              aes(x = gene_effect, y = gene_expression, color = PvA == "Pediatric")) + 
+  stat_smooth(method = "lm", formula = "y ~ x", alpha = 0.2) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("gray", "red"), guide = F) + 
+  theme_bw() +
+  xlab('MCL1 gene effect') + ylab('BCL2L1 gene expression (log2(TPM))') +
+  theme_Publication() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(), aspect.ratio = 1,
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+
+biomarker_scatter_plot
+
+saveRDS(biomarker_scatter_plot, file = paste0('figures/biomarkers/pred_features_scatter_', genes_to_highlight, version_to_use, '.rds'))
+ggsave(biomarker_scatter_plot, filename = paste0('figures/biomarkers/pred_features_scatter_', genes_to_highlight, version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+
+<!-- #### MDM2 - EDA2R -->
+
+<!-- ```{r include=T} -->
+<!-- genes_to_highlight <- "MDM2_EDA2R" -->
+
+<!-- data_to_plot <- left_join( -->
+<!--   left_join(mf,  -->
+<!--             as.data.frame(cbind(rownames(gene_effect), gene_effect[,"MDM2 (4193)",drop=F])) %>%  -->
+<!--               set_colnames(c("DepMap_ID", "gene_effect")), by = "DepMap_ID"), -->
+<!--   as.data.frame(cbind(rownames(gene_expression), gene_expression[,"EDA2R (60401)",drop=F])) %>%  -->
+<!--     set_colnames(c("DepMap_ID", "gene_expression")), by = "DepMap_ID") %>% -->
+<!--   dplyr::mutate(gene_effect = as.numeric(gene_effect),  -->
+<!--                 gene_expression = as.numeric(gene_expression)) -->
+
+
+<!-- biomarker_scatter_plot <- ggplot(data_to_plot %>% filter(!is.na(gene_effect), !is.na(gene_expression)),  -->
+<!--                               aes(x = gene_effect, y = gene_expression, color = PvA == "Pediatric")) +  -->
+<!--   stat_smooth(method = "lm", formula = "y ~ x", alpha = 0.2) + -->
+<!--   geom_point(alpha = 0.5) + -->
+<!--   scale_color_manual(values = c("gray", "red"), guide = F) +  -->
+<!--   theme_bw() + -->
+<!--   xlab('MDM2 gene effect') + ylab('EDA2R gene expression (log2(TPM))') + -->
+<!--   theme_Publication() + -->
+<!--   theme(panel.border = element_blank(), panel.grid.major = element_blank(), aspect.ratio = 1, -->
+<!--         panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))  -->
+
+<!-- biomarker_scatter_plot -->
+
+<!-- saveRDS(biomarker_scatter_plot, file = paste0('figures/biomarkers/pred_features_scatter_', genes_to_highlight, version_to_use, '.rds')) -->
+<!-- ggsave(biomarker_scatter_plot, filename = paste0('figures/biomarkers/pred_features_scatter_', genes_to_highlight, version_to_use, '.pdf'),  -->
+<!--        height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE) -->
+<!-- ``` -->
+
+<!-- #### HDAC2 - FUCA1 -->
+
+<!-- ```{r include=T} -->
+<!-- genes_to_highlight <- "HDAC2_FUCA1" -->
+
+<!-- data_to_plot <- left_join( -->
+<!--   left_join(mf,  -->
+<!--             as.data.frame(cbind(rownames(gene_effect), gene_effect[,"HDAC2 (3066)",drop=F])) %>%  -->
+<!--               set_colnames(c("DepMap_ID", "gene_effect")), by = "DepMap_ID"), -->
+<!--   as.data.frame(cbind(rownames(gene_expression), gene_expression[,"FUCA1 (2517)",drop=F])) %>%  -->
+<!--     set_colnames(c("DepMap_ID", "gene_expression")), by = "DepMap_ID") %>% -->
+<!--   dplyr::mutate(gene_effect = as.numeric(gene_effect),  -->
+<!--                 gene_expression = as.numeric(gene_expression)) -->
+
+
+<!-- biomarker_scatter_plot <- ggplot(data_to_plot %>% filter(!is.na(gene_effect), !is.na(gene_expression)),  -->
+<!--                               aes(x = gene_effect, y = gene_expression, color = PvA == "Pediatric")) +  -->
+<!--   stat_smooth(method = "lm", formula = "y ~ x", alpha = 0.2) + -->
+<!--   geom_point(alpha = 0.5) + -->
+<!--   scale_color_manual(values = c("gray", "red"), guide = F) +  -->
+<!--   theme_bw() + -->
+<!--   xlab('HDAC2 gene effect') + ylab('FUCA1 gene expression (log2(TPM))') + -->
+<!--   theme_Publication() + -->
+<!--   theme(panel.border = element_blank(), panel.grid.major = element_blank(), aspect.ratio = 1, -->
+<!--         panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))  -->
+
+<!-- biomarker_scatter_plot -->
+
+<!-- saveRDS(biomarker_scatter_plot, file = paste0('figures/biomarkers/pred_features_scatter_', genes_to_highlight, version_to_use, '.rds')) -->
+<!-- ggsave(biomarker_scatter_plot, filename = paste0('figures/biomarkers/pred_features_scatter_', genes_to_highlight, version_to_use, '.pdf'),  -->
+<!--        height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE) -->
+<!-- ``` -->
+
+#### IGF1R - IGF1R
+
+```{r include=T}
+genes_to_highlight <- "IGF1R_IGF1R"
+
+data_to_plot <- left_join(
+  left_join(mf,
+            as.data.frame(cbind(rownames(gene_effect), gene_effect[,"IGF1R (3480)",drop=F])) %>%
+              set_colnames(c("DepMap_ID", "gene_effect")), by = "DepMap_ID"),
+  as.data.frame(cbind(rownames(gene_expression), gene_expression[,"IGF1R (3480)",drop=F])) %>%
+    set_colnames(c("DepMap_ID", "gene_expression")), by = "DepMap_ID") %>%
+  dplyr::mutate(gene_effect = as.numeric(gene_effect),
+                gene_expression = as.numeric(gene_expression))
+
+
+biomarker_scatter_plot <- ggplot(data_to_plot %>% filter(!is.na(gene_effect), !is.na(gene_expression)),
+                              aes(x = gene_effect, y = gene_expression, color = PvA == "Pediatric")) +
+  stat_smooth(method = "lm", formula = "y ~ x", alpha = 0.2) +
+  geom_point(alpha = 0.5) +
+  scale_color_manual(values = c("gray", "red"), guide = F) +
+  theme_bw() +
+  xlab('IGF1R gene effect') + ylab('IGF1R gene expression (log2(TPM))') +
+  theme_Publication() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(), aspect.ratio = 1,
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+biomarker_scatter_plot
+
+saveRDS(biomarker_scatter_plot, file = paste0('figures/biomarkers/pred_features_scatter_', genes_to_highlight, version_to_use, '.rds'))
+ggsave(biomarker_scatter_plot, filename = paste0('figures/biomarkers/pred_features_scatter_', genes_to_highlight, version_to_use, '.pdf'),
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+<!-- #### IGF1R - IGF2 -->
+
+<!-- ```{r include=T} -->
+<!-- genes_to_highlight <- "IGF1R_IGF2" -->
+
+<!-- data_to_plot <- left_join( -->
+<!--   left_join(mf,  -->
+<!--             as.data.frame(cbind(rownames(gene_effect), gene_effect[,"IGF1R (3480)",drop=F])) %>%  -->
+<!--               set_colnames(c("DepMap_ID", "gene_effect")), by = "DepMap_ID"), -->
+<!--   as.data.frame(cbind(rownames(gene_expression), gene_expression[,"IGF2 (3481)",drop=F])) %>%  -->
+<!--     set_colnames(c("DepMap_ID", "gene_expression")), by = "DepMap_ID") %>% -->
+<!--   dplyr::mutate(gene_effect = as.numeric(gene_effect),  -->
+<!--                 gene_expression = as.numeric(gene_expression)) -->
+
+
+<!-- biomarker_scatter_plot <- ggplot(data_to_plot %>% filter(!is.na(gene_effect), !is.na(gene_expression)),  -->
+<!--                               aes(x = gene_effect, y = gene_expression, color = PvA == "Pediatric")) +  -->
+<!--   stat_smooth(method = "lm", formula = "y ~ x", alpha = 0.2) + -->
+<!--   geom_point(alpha = 0.5) + -->
+<!--   scale_color_manual(values = c("gray", "red"), guide = F) +  -->
+<!--   theme_bw() + -->
+<!--   xlab('IGF1R gene effect') + ylab('IGF2 gene expression (log2(TPM))') + -->
+<!--   theme_Publication() + -->
+<!--   theme(panel.border = element_blank(), panel.grid.major = element_blank(), aspect.ratio = 1, -->
+<!--         panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))  -->
+
+<!-- biomarker_scatter_plot -->
+
+<!-- saveRDS(biomarker_scatter_plot, file = paste0('figures/biomarkers/pred_features_scatter_', genes_to_highlight, version_to_use, '.rds')) -->
+<!-- ggsave(biomarker_scatter_plot, filename = paste0('figures/biomarkers/pred_features_scatter_', genes_to_highlight, version_to_use, '.pdf'),  -->
+<!--        height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE) -->
+<!-- ``` -->
+
+<!-- ### Example predictive model scatter plots with gene-sets {.tabset .tabset-fade} -->
+
+<!-- #### IGF1R - "IGF" gene sets -->
+
+<!-- ```{r include=T} -->
+<!-- msigdb <- load_msigdb() -->
+
+<!-- gene_sigs <- as.data.frame(unique(msigdb$C2$term), stringsAsFactors = F) %>%  -->
+<!--   magrittr::set_colnames("V1") %>% -->
+<!--   dplyr::filter(grepl("IGF", V1) & (grepl("BIOCARTA", V1) | grepl("REACTOME", V1))) -->
+
+<!-- for (sig in gene_sigs$V1) -->
+<!-- { -->
+<!--   genes_to_highlight <- paste0("IGF1R_", sig) -->
+<!--   sig_gene_members <- msigdb$C2$gene[msigdb$C2$term == sig] -->
+
+<!--   data_to_plot <- left_join( -->
+<!--     left_join(mf,  -->
+<!--               as.data.frame(cbind(rownames(gene_effect), gene_effect[,"IGF1R (3480)",drop=F])) %>%  -->
+<!--                 set_colnames(c("DepMap_ID", "gene_effect")), by = "DepMap_ID"), -->
+<!--     as.data.frame(cbind(rownames(gene_expression),  -->
+<!--                         rowMeans(gene_expression[,gsub("[)]", "", gsub(".* [(]", "",colnames(gene_expression))) %in% sig_gene_members,drop=F]))) %>%  -->
+<!--       set_colnames(c("DepMap_ID", "sig_mean_expression")), by = "DepMap_ID") %>% -->
+<!--     dplyr::mutate(gene_effect = as.numeric(gene_effect),  -->
+<!--                   sig_mean_expression = as.numeric(sig_mean_expression)) -->
+
+<!--   biomarker_scatter_plot <- ggplot(data_to_plot %>% filter(!is.na(gene_effect), !is.na(sig_mean_expression)),  -->
+<!--                                    aes(x = gene_effect, y = sig_mean_expression, color = PvA == "Pediatric")) +  -->
+<!--     stat_smooth(method = "lm", formula = "y ~ x", alpha = 0.2) + -->
+<!--     geom_point(alpha = 0.5) + -->
+<!--     scale_color_manual(values = c("gray", "red"), guide = F) +  -->
+<!--     theme_bw() + -->
+<!--     xlab('IGF1R gene effect') + ylab(paste0(str_trunc(sig, 30, side = "center", ellipsis = "..."), '\nmean gene expression (log2(TPM))')) + -->
+<!--     theme_Publication() + -->
+<!--     theme(panel.border = element_blank(), panel.grid.major = element_blank(), aspect.ratio = 1, -->
+<!--           panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))  -->
+
+<!--   print(biomarker_scatter_plot) -->
+
+<!--   saveRDS(biomarker_scatter_plot, file = paste0('figures/biomarkers/pred_features_scatter_', genes_to_highlight, version_to_use, '.rds')) -->
+<!--   ggsave(biomarker_scatter_plot, filename = paste0('figures/biomarkers/pred_features_scatter_', genes_to_highlight, version_to_use, '.pdf'),  -->
+<!--          height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE) -->
+<!-- } -->
+<!-- ``` -->
+
+<!-- #### MDM2 - "TP53" gene sets -->
+
+<!-- ```{r include=T} -->
+<!-- msigdb <- load_msigdb() -->
+
+<!-- gene_sigs <- as.data.frame(unique(msigdb$C2$term), stringsAsFactors = F) %>%  -->
+<!--   magrittr::set_colnames("V1") %>% -->
+<!--   dplyr::filter(grepl("TP53_TARGETS", V1)) -->
+
+<!-- for (sig in gene_sigs$V1) -->
+<!-- { -->
+<!--   genes_to_highlight <- paste0("MDM2_", sig) -->
+<!--   sig_gene_members <- msigdb$C2$gene[msigdb$C2$term == sig] -->
+
+<!--   data_to_plot <- left_join( -->
+<!--     left_join(mf,  -->
+<!--               as.data.frame(cbind(rownames(gene_effect), gene_effect[,"MDM2 (4193)",drop=F])) %>%  -->
+<!--                 set_colnames(c("DepMap_ID", "gene_effect")), by = "DepMap_ID"), -->
+<!--     as.data.frame(cbind(rownames(gene_expression),  -->
+<!--                         rowMeans(gene_expression[,gsub("[)]", "", gsub(".* [(]", "",colnames(gene_expression))) %in% sig_gene_members,drop=F]))) %>%  -->
+<!--       set_colnames(c("DepMap_ID", "sig_mean_expression")), by = "DepMap_ID") %>% -->
+<!--     dplyr::mutate(gene_effect = as.numeric(gene_effect),  -->
+<!--                   sig_mean_expression = as.numeric(sig_mean_expression)) -->
+
+<!--   biomarker_scatter_plot <- ggplot(data_to_plot %>% filter(!is.na(gene_effect), !is.na(sig_mean_expression)),  -->
+<!--                                    aes(x = gene_effect, y = sig_mean_expression, color = PvA == "Pediatric")) +  -->
+<!--     stat_smooth(method = "lm", formula = "y ~ x", alpha = 0.2) + -->
+<!--     geom_point(alpha = 0.5) + -->
+<!--     scale_color_manual(values = c("gray", "red"), guide = F) +  -->
+<!--     theme_bw() + -->
+<!--     xlab('MDM2 gene effect') + ylab(paste0(str_trunc(sig, 30, side = "center", ellipsis = "..."), '\nmean gene expression (log2(TPM))')) + -->
+<!--     theme_Publication() + -->
+<!--     theme(panel.border = element_blank(), panel.grid.major = element_blank(), aspect.ratio = 1, -->
+<!--           panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))  -->
+
+<!--   print(biomarker_scatter_plot) -->
+
+<!--   saveRDS(biomarker_scatter_plot, file = paste0('figures/biomarkers/pred_features_scatter_', genes_to_highlight, version_to_use, '.rds')) -->
+<!--   ggsave(biomarker_scatter_plot, filename = paste0('figures/biomarkers/pred_features_scatter_', genes_to_highlight, version_to_use, '.pdf'),  -->
+<!--          height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE) -->
+<!-- } -->
+<!-- ``` -->
+
+<!-- #### HDAC2 - "HDAC2" gene sets -->
+
+<!-- ```{r include=T} -->
+<!-- msigdb <- load_msigdb() -->
+
+<!-- gene_sigs <- as.data.frame(unique(msigdb$C2$term), stringsAsFactors = F) %>%  -->
+<!--   magrittr::set_colnames("V1") %>% -->
+<!--   dplyr::filter(grepl("HDAC2", V1)) -->
+
+<!-- for (sig in gene_sigs$V1) -->
+<!-- { -->
+<!--   genes_to_highlight <- paste0("HDAC2_", sig) -->
+<!--   sig_gene_members <- msigdb$C2$gene[msigdb$C2$term == sig] -->
+
+<!--   data_to_plot <- left_join( -->
+<!--     left_join(mf,  -->
+<!--               as.data.frame(cbind(rownames(gene_effect), gene_effect[,"HDAC2 (3066)",drop=F])) %>%  -->
+<!--                 set_colnames(c("DepMap_ID", "gene_effect")), by = "DepMap_ID"), -->
+<!--     as.data.frame(cbind(rownames(gene_expression),  -->
+<!--                         rowMeans(gene_expression[,gsub("[)]", "", gsub(".* [(]", "",colnames(gene_expression))) %in% sig_gene_members,drop=F]))) %>%  -->
+<!--       set_colnames(c("DepMap_ID", "sig_mean_expression")), by = "DepMap_ID") %>% -->
+<!--     dplyr::mutate(gene_effect = as.numeric(gene_effect),  -->
+<!--                   sig_mean_expression = as.numeric(sig_mean_expression)) -->
+
+<!--   biomarker_scatter_plot <- ggplot(data_to_plot %>% filter(!is.na(gene_effect), !is.na(sig_mean_expression)),  -->
+<!--                                    aes(x = gene_effect, y = sig_mean_expression, color = PvA == "Pediatric")) +  -->
+<!--     stat_smooth(method = "lm", formula = "y ~ x", alpha = 0.2) + -->
+<!--     geom_point(alpha = 0.5) + -->
+<!--     scale_color_manual(values = c("gray", "red"), guide = F) +  -->
+<!--     theme_bw() + -->
+<!--     xlab('HDAC2 gene effect') + ylab(paste0(str_trunc(sig, 30, side = "center", ellipsis = "..."), '\nmean gene expression (log2(TPM))')) + -->
+<!--     theme_Publication() + -->
+<!--     theme(panel.border = element_blank(), panel.grid.major = element_blank(), aspect.ratio = 1, -->
+<!--           panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))  -->
+
+<!--   print(biomarker_scatter_plot) -->
+
+<!--   saveRDS(biomarker_scatter_plot, file = paste0('figures/biomarkers/pred_features_scatter_', genes_to_highlight, version_to_use, '.rds')) -->
+<!--   ggsave(biomarker_scatter_plot, filename = paste0('figures/biomarkers/pred_features_scatter_', genes_to_highlight, version_to_use, '.pdf'),  -->
+<!--          height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE) -->
+<!-- } -->
+<!-- ``` -->
+
+## Session Info
+
+```{r session_info, include=TRUE, echo=TRUE, results='markup'}
+devtools::session_info()
+```
+
+```{r include=TRUE}
+as.data.frame(`Dataset Used`) %>% datatable(options=list(scrollX=T))
+```

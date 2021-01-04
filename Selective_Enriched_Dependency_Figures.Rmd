@@ -1,0 +1,1122 @@
+---
+title: "Selective and Enriched Dependency Figures"
+author: "Neekesh Dharia & Guillaume Kugener"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include=FALSE, message=FALSE, warning = FALSE)
+source('setup.R')
+source('load_data.R')
+```
+
+
+# Generated using: `r toupper(version_to_use)`
+
+
+```{r load_needed_datasets}
+# This script uses the following datasets:
+mf <- mf
+gene_dependency <- load_gene_dependency()
+gene_effect <- load_gene_effect()
+gene_expression <- load_gene_expression()
+gene_lrt_table <- load_lrt_table()
+achilles_common_essentials <- load_achilles_common_essentials()
+msigdb <- load_msigdb()
+
+if(!dir.exists('figures')) { dir.create('figures') }
+if(!dir.exists('figures/dependency')) { dir.create('figures/dependency') }
+```
+
+
+The table below highlights all of the cell lines that are included in the analyses and the types that they are annotated as:
+
+```{r}
+cell_lines_included_table <- rbind(
+  data.frame(name=row.names(gene_dependency), stringsAsFactors = F) %>% mutate(Source='Dependency'),
+  data.frame(name=row.names(gene_expression), stringsAsFactors = F) %>% mutate(Source='Expression')
+) %>% mutate(value=1) %>% mutate(DepMap_ID=name) %>%
+  spread(., Source, value) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, CCLE_name, Type), by='DepMap_ID') %>%
+  dplyr::select(DepMap_ID, CCLE_name, everything())
+```
+
+```{r include=TRUE} 
+cell_lines_included_table %>% datatable(options=list(scrollX=T))
+```
+
+# Overview
+
+* Evaluate selective dependencies across adult and pediatric cell lines by comparing rates of dependency
+* Identify selective dependencies that occur more frequently in pediatric cell lines
+* Calculate enriched dependencies and plot across pediatric tumor types
+
+## Dependency example densities
+
+```{r}
+lrt_genes <- gene_lrt_table %>% filter((lrt) > 100, skewed_left) %$%
+  gene
+
+achilles_non_essentials <- colSums(gene_dependency >= 0.5, na.rm = T)
+achilles_non_essentials <- names(achilles_non_essentials[achilles_non_essentials == 0])
+
+lrt_genes_ceres <- lrt_genes
+lrt_genes_ceres <- lrt_genes_ceres[!(lrt_genes_ceres %in% c(achilles_non_essentials, achilles_common_essentials$gene))]
+
+# picked an olfactory receptor with low LRT and mean/median = 0ish. ISL1 302.6944
+
+distributions_to_plot <- gather(as.data.frame(gene_effect[,c("OR4S2 (219431)","TOP2A (7153)","ISL1 (3670)")]), Var2, value) %>%
+  mutate(Var2 = gsub(" .*", "", Var2)) %>%
+  mutate(Var2 = factor(Var2, levels = c("OR4S2", "TOP2A", "ISL1")))
+               
+# Make plot showing distribution of non-essential, pan-lethal and selective gene
+dep_dist <- ggplot(distributions_to_plot, aes(value, color=Var2, fill=Var2)) +
+  geom_density() +
+  geom_point(aes(x=value, y=-0.9), pch="|", size=8) +
+  geom_hline(color = "white", yintercept = 0, size=0.7) +
+  geom_hline(color = "black", yintercept = 0, size=0.12) +
+  geom_vline(color = "black", xintercept = 0) +
+  geom_vline(color = "red", linetype="dashed", xintercept = -1) +
+  scale_fill_manual(values = c("darkgray", "red", "blue")) + 
+  scale_color_manual(values = c("darkgray", "red", "blue")) + 
+  theme_bw() +
+  scale_y_continuous(breaks = c(0, 1, 2, 3), ) + 
+  xlab('Gene effect score') + ylab('') +
+  theme_Publication() +
+  theme(legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line.x = element_blank(),
+        panel.spacing = unit(1, "lines"), strip.background=element_blank()) +
+  facet_wrap(~Var2, nrow = 3) 
+
+dep_dist
+saveRDS(dep_dist, file = paste0('figures/dependency/dep_example_distribution_', version_to_use, '.rds'))
+ggsave(dep_dist, filename = paste0('figures/dependency/dep_example_distribution_', version_to_use, '.pdf'), 
+       height = 14, width=14, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+
+```{r include=TRUE}
+gene_dependency_adult <- gene_dependency[rownames(gene_dependency) %in% mf$DepMap_ID[mf$PvA == "Adult"],]
+gene_dependency_peds <- gene_dependency[rownames(gene_dependency) %in% mf$DepMap_ID[mf$PvA == "Pediatric"],]
+gene_effect_adult <- gene_effect[rownames(gene_effect) %in% mf$DepMap_ID[mf$PvA == "Adult"],]
+gene_effect_peds <- gene_effect[rownames(gene_effect) %in% mf$DepMap_ID[mf$PvA == "Pediatric"],]
+
+# Ratio of cell lines dependent on selective dependecies
+adult_lrt_rate <- colSums(gene_dependency_adult[, lrt_genes_ceres]>0.5, na.rm=T) / colSums(gene_dependency_adult[, lrt_genes_ceres]>=0, na.rm=T)
+pediatric_lrt_rate <- colSums(gene_dependency_peds[, lrt_genes_ceres]>0.5, na.rm=T) / colSums(gene_dependency_peds[, lrt_genes_ceres]>=0, na.rm=T)
+
+diff_lrt_rate <- pediatric_lrt_rate - adult_lrt_rate
+
+diff_lrt_rate_pvalue <- diff_lrt_rate
+
+for (gene in lrt_genes_ceres)
+{
+  gene <- as.character(gene)
+  diff_lrt_rate_pvalue[gene] <- fisher.test(matrix(c(sum(gene_dependency_adult[, gene]>0.5, na.rm=T),
+                                                     sum(gene_dependency_adult[, gene]>=0, na.rm=T), 
+                                                     sum(gene_dependency_peds[, gene]>0.5, na.rm=T),
+                                                     sum(gene_dependency_peds[, gene]>=0, na.rm=T)), 
+                                                   nrow = 2))$p.value
+}
+diff_lrt_rate_pvalue_adj <- p.adjust(diff_lrt_rate_pvalue, method = "BH")
+
+all_lrt_rate_by_type <- gather(as.data.frame(gene_dependency[, lrt_genes_ceres]) %>% 
+                                 dplyr::mutate(DepMap_ID = rownames(.)), Gene, dep, -DepMap_ID) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type, PvA), by='DepMap_ID') %>%
+  group_by(Gene, Type) %>% 
+  mutate(n = n()) %>%
+  mutate(n_dep = sum(dep >= 0.5, na.rm=T)) %>%
+  dplyr::select(Type, PvA, Gene, n, n_dep) %>%
+  unique() %>%
+  group_by(Gene, PvA) %>%
+  mutate(lrt_rate = sum(n_dep) / sum (n), n_PvA = sum(n_dep)) %>%
+  ungroup() %>%
+  mutate(type_lrt_rate = lrt_rate * n_dep / n_PvA) %>%
+  mutate(p.value = diff_lrt_rate_pvalue[Gene], p.value.adj = diff_lrt_rate_pvalue_adj[Gene]) 
+
+all_lrt_rate_by_type %<>% rbind(., 
+                                as.data.frame(cbind(names(diff_lrt_rate), diff_lrt_rate, diff_lrt_rate_pvalue, diff_lrt_rate_pvalue_adj)) %>% 
+                                  dplyr::rename(Gene = V1, type_lrt_rate = diff_lrt_rate,
+                                                p.value = diff_lrt_rate_pvalue, p.value.adj = diff_lrt_rate_pvalue_adj) %>% 
+                                  mutate(Type = ifelse(as.numeric(type_lrt_rate) > 0, "Differential_pos", "Differential_neg"), 
+                                         PvA = "Differential", 
+                                         n = NA, n_dep = NA, lrt_rate = type_lrt_rate, n_PvA = NA) %>%
+                                  dplyr::select((names(all_lrt_rate_by_type)))) %>%
+  filter(PvA != "Fibroblast") %>%
+  mutate(Group = ifelse(PvA == "Adult", "Fraction of\nadult lines\ndependent", 
+                        ifelse(PvA == "Pediatric", "Fraction of\npediatric lines\ndependent", 
+                               "Difference in\npediatric vs adult\nfraction"))) %>%
+  mutate(Group = factor(Group, levels = c("Fraction of\nadult lines\ndependent", 
+                                          "Fraction of\npediatric lines\ndependent", 
+                                          "Difference in\npediatric vs adult\nfraction"))) %>%
+  mutate(type_lrt_rate = as.numeric(type_lrt_rate), 
+         lrt_rate = as.numeric(lrt_rate)) %>% 
+  mutate(type_lrt_rate = ifelse(type_lrt_rate == "NaN", 0, type_lrt_rate))
+
+write.table(all_lrt_rate_by_type, file = paste0('figures/dependency/ped_v_adult_fraction_dependent_', version_to_use, '.txt'), 
+            sep = "\t", row.names = F)
+```
+
+
+## Selective dependency rates 
+
+### Bar plots {.tabset .tabset-fade}
+
+#### All selective dependencies
+
+```{r include=TRUE}
+all_lrt_rate_by_type %<>% mutate(Gene = factor(Gene, levels = c(names(pediatric_lrt_rate[rev(order(adult_lrt_rate, pediatric_lrt_rate))]))))
+all_lrt_rates_hlines <- data.frame(Group = factor(unique(all_lrt_rate_by_type$Group)), Z = c(0.02, 0.03, 0))
+
+all_lrt_genes_bar <- ggplot(data=all_lrt_rate_by_type, 
+                            aes(x=Gene, y=type_lrt_rate, fill=Type)) +
+  geom_bar(stat="identity", position=position_stack(reverse = TRUE)) +
+  scale_fill_manual(values = c(complete_type_colors, "Differential_pos" = "red", "Differential_neg" = "black")) +
+  scale_color_manual(values = c(complete_type_colors, "Differential_pos" = "red", "Differential_neg" = "black")) +
+  theme_bw() +
+  xlab('Gene') + ylab('') +
+  scale_y_continuous(breaks = seq(-1, 1, 0.2)) + 
+  coord_flip() +
+  theme_Publication() +
+  theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"),
+        strip.background = element_blank(), strip.text = element_text(face = "plain")) +
+  facet_wrap(~Group, scales = "free") +
+  geom_hline(data = all_lrt_rates_hlines, aes(yintercept = Z), color = "black", linetype="dashed") 
+
+all_lrt_genes_bar
+saveRDS(all_lrt_genes_bar, file = paste0('figures/dependency/ped_v_adult_fraction_dependent_', version_to_use, '.rds'))
+ggsave(all_lrt_genes_bar, filename = paste0('figures/dependency/ped_v_adult_fraction_dependent_', version_to_use, '.pdf'), 
+       height = 14, width=20, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+#### <2% Adult, >3% Peds
+
+```{r include=TRUE}
+all_lrt_rate_by_type %<>% mutate(Gene = factor(Gene, levels = c(names(pediatric_lrt_rate[rev(order(adult_lrt_rate, pediatric_lrt_rate))]))))
+all_lrt_rates_hlines <- data.frame(Group = factor(unique(all_lrt_rate_by_type$Group)), Z = c(0.02, 0.03, 0))
+
+lrt_genes_labels <- (all_lrt_rate_by_type %>% filter(Gene %in% names(adult_lrt_rate)[adult_lrt_rate < 0.02 & pediatric_lrt_rate > 0.03]) %>%
+                              mutate(Gene=gsub(" .*","",Gene)) %$% Gene)
+names(lrt_genes_labels) <- (all_lrt_rate_by_type %>% filter(Gene %in% names(adult_lrt_rate)[adult_lrt_rate < 0.02 & pediatric_lrt_rate > 0.03]) %$% Gene)
+
+all_lrt_genes_bar <- ggplot(data=all_lrt_rate_by_type %>% filter(Gene %in% names(adult_lrt_rate)[adult_lrt_rate < 0.02 & pediatric_lrt_rate > 0.03]), 
+                            aes(x=Gene, y=type_lrt_rate, fill=Type)) +
+  geom_bar(stat="identity", position=position_stack(reverse = TRUE)) +
+  scale_fill_manual(values = c(complete_type_colors, "Differential_pos" = "red", "Differential_neg" = "black")) +
+  scale_color_manual(values = c(complete_type_colors, "Differential_pos" = "red", "Differential_neg" = "black")) +
+  theme_bw() +
+  xlab('Gene') + ylab('') +
+  scale_y_continuous(breaks = seq(-1, 1, 0.1)) + 
+  scale_x_discrete(labels = lrt_genes_labels) +
+  coord_flip() +
+  theme_Publication() +
+  theme(axis.ticks.y = element_blank(), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"),
+        strip.background = element_blank(), strip.text = element_text(face = "plain")) +
+  facet_wrap(~Group) +
+  geom_hline(data = all_lrt_rates_hlines, aes(yintercept = Z), color = "black", linetype="dashed") 
+
+all_lrt_genes_bar
+saveRDS(all_lrt_genes_bar, file = paste0('figures/dependency/ped_v_adult_diff_fraction_dependent_', version_to_use, '.rds'))
+ggsave(all_lrt_genes_bar, filename = paste0('figures/dependency/ped_v_adult_diff_fraction_dependent_', version_to_use, '.pdf'), 
+       height = 14, width=20, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+#### Rate difference p<0.05
+
+```{r include=TRUE}
+all_lrt_rate_by_type %<>% mutate(Gene = factor(Gene, levels = c(names(pediatric_lrt_rate[rev(order(adult_lrt_rate, pediatric_lrt_rate))]))))
+all_lrt_rates_hlines <- data.frame(Group = factor(unique(all_lrt_rate_by_type$Group)), Z = c(0.02, 0.03, 0))
+
+lrt_genes_labels <- (all_lrt_rate_by_type %>% filter(Gene %in% names(adult_lrt_rate)[diff_lrt_rate_pvalue_adj < 0.05 & diff_lrt_rate > 0]) %>%
+                              mutate(Gene=gsub(" .*","",Gene)) %$% Gene)
+names(lrt_genes_labels) <- (all_lrt_rate_by_type %>% filter(Gene %in% names(adult_lrt_rate)[diff_lrt_rate_pvalue_adj < 0.05 & diff_lrt_rate > 0]) %$% Gene)
+
+all_lrt_genes_bar <- ggplot(data=all_lrt_rate_by_type %>% filter(Gene %in% names(adult_lrt_rate)[diff_lrt_rate_pvalue_adj < 0.05 & diff_lrt_rate > 0]), 
+                            aes(x=Gene, y=type_lrt_rate, fill=Type)) +
+  geom_bar(stat="identity", position=position_stack(reverse = TRUE)) +
+  scale_fill_manual(values = c(complete_type_colors, "Differential_pos" = "red", "Differential_neg" = "black")) +
+  scale_color_manual(values = c(complete_type_colors, "Differential_pos" = "red", "Differential_neg" = "black")) +
+  theme_bw() +
+  xlab('Gene') + ylab('') +
+  scale_y_continuous(breaks = seq(-1, 1, 0.2)) + 
+  scale_x_discrete(labels = lrt_genes_labels) +
+  coord_flip() +
+  theme_Publication() +
+  theme(axis.ticks.y = element_blank(), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"),
+        strip.background = element_blank(), strip.text = element_text(face = "plain")) +
+  facet_wrap(~Group) +
+  geom_hline(data = all_lrt_rates_hlines, aes(yintercept = Z), color = "black", linetype="dashed") 
+
+all_lrt_genes_bar
+saveRDS(all_lrt_genes_bar, file = paste0('figures/dependency/ped_v_adult_sig_fraction_dependent_', version_to_use, '.rds'))
+ggsave(all_lrt_genes_bar, filename = paste0('figures/dependency/ped_v_adult_sig_fraction_dependent_', version_to_use, '.pdf'), 
+       height = 14, width=20, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+#### Both >5%
+
+```{r include=TRUE}
+all_lrt_rate_by_type %<>% mutate(Gene = factor(Gene, levels = c(names(pediatric_lrt_rate[rev(order(adult_lrt_rate, pediatric_lrt_rate))]))))
+all_lrt_rates_hlines <- data.frame(Group = factor(unique(all_lrt_rate_by_type$Group)), Z = c(0.02, 0.03, 0))
+
+all_lrt_genes_bar <- ggplot(data=all_lrt_rate_by_type %>% filter(Gene %in% names(adult_lrt_rate)[adult_lrt_rate > 0.05 & pediatric_lrt_rate > 0.05]), 
+                            aes(x=Gene, y=type_lrt_rate, fill=Type)) +
+  geom_bar(stat="identity", position=position_stack(reverse = TRUE)) +
+  scale_fill_manual(values = c(complete_type_colors, "Differential_pos" = "red", "Differential_neg" = "black")) +
+  scale_color_manual(values = c(complete_type_colors, "Differential_pos" = "red", "Differential_neg" = "black")) +
+  theme_bw() +
+  xlab('Gene') + ylab('') +
+  scale_y_continuous(breaks = seq(-1, 1, 0.2)) + 
+  coord_flip() +
+  theme_Publication() +
+  theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"),
+        strip.background = element_blank(), strip.text = element_text(face = "plain")) +
+  facet_wrap(~Group, scales = "free") +
+  geom_hline(data = all_lrt_rates_hlines, aes(yintercept = Z), color = "black", linetype="dashed") 
+
+all_lrt_genes_bar
+saveRDS(all_lrt_genes_bar, file = paste0('figures/dependency/ped_v_adult_top_fraction_dependent_', version_to_use, '.rds'))
+ggsave(all_lrt_genes_bar, filename = paste0('figures/dependency/ped_v_adult_top_fraction_dependent_', version_to_use, '.pdf'), 
+       height = 14, width=20, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+### Tables {.tabset .tabset-fade}
+
+#### Genes with p.adj < 0.05 for fraction of peds > adult.
+
+```{r include=T}
+all_lrt_rate_by_type %>% 
+  filter(Gene %in% names(adult_lrt_rate)[diff_lrt_rate_pvalue_adj < 0.05 & diff_lrt_rate > 0]) %>% 
+  dplyr::select(Gene, p.value.adj, Group, lrt_rate) %>% 
+  unique() %>%
+  spread(., Group, lrt_rate) %>%
+  datatable(options=list(scrollX=T, order = list(list(2, 'desc'))), rownames = F)
+```
+
+```{r include=T}
+gene_list <- pull(all_lrt_rate_by_type %>% 
+                    filter(Gene %in% names(adult_lrt_rate)[diff_lrt_rate_pvalue_adj < 0.05 & diff_lrt_rate > 0]) %>% 
+                    dplyr::select(Gene) %>% 
+                    unique() %>%
+                    dplyr::mutate(Gene = gsub("[)]", "" , gsub(".* [(]", "", Gene))), Gene)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$H) 
+
+dotplot(over_res, showCategory=20, title = "H: p.adj <0.05 for peds rate > adult", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C2) 
+
+dotplot(over_res, showCategory=20, title = "C2: p.adj <0.05 for peds rate > adult", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C5) 
+
+dotplot(over_res, showCategory=20, title = "C5: p.adj <0.05 for peds rate > adult", font.size = 6)
+```
+
+#### Genes with p.adj < 0.05 for fraction of adult > peds.
+
+```{r include=T}
+all_lrt_rate_by_type %>% 
+  filter(Gene %in% names(adult_lrt_rate)[diff_lrt_rate_pvalue_adj < 0.05 & diff_lrt_rate < 0]) %>% 
+  dplyr::select(Gene, p.value.adj, Group, lrt_rate) %>% 
+  unique() %>%
+  spread(., Group, lrt_rate) %>%
+  datatable(options=list(scrollX=T, order = list(list(2, 'desc'))), rownames = F)
+```
+
+```{r include=T}
+gene_list <- pull(all_lrt_rate_by_type %>% 
+                    filter(Gene %in% names(adult_lrt_rate)[diff_lrt_rate_pvalue_adj < 0.05 & diff_lrt_rate < 0]) %>% 
+                    dplyr::select(Gene) %>% 
+                    unique() %>%
+                    dplyr::mutate(Gene = gsub("[)]", "" , gsub(".* [(]", "", Gene))), Gene)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$H) 
+
+dotplot(over_res, showCategory=20, title = "H: p.adj <0.05 for adult rate > peds", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C2) 
+
+dotplot(over_res, showCategory=20, title = "C2: p.adj <0.05 for adult rate > peds", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C5) 
+
+dotplot(over_res, showCategory=20, title = "C5: p.adj <0.05 for adult rate > peds", font.size = 6)
+```
+
+#### Genes with pediatric LRT dep rate - adults LRT dep rate > 5%.
+
+```{r include=T}
+all_lrt_rate_by_type %>% 
+  filter(Gene %in% names(adult_lrt_rate)[diff_lrt_rate > 0.05]) %>% 
+  dplyr::select(Gene, p.value.adj, Group, lrt_rate) %>% 
+  unique() %>%
+  spread(., Group, lrt_rate) %>%
+  datatable(options=list(scrollX=T, order = list(list(2, 'desc'))), rownames = F)
+```
+
+```{r include=T}
+gene_list <- pull(all_lrt_rate_by_type %>% 
+                    filter(Gene %in% names(adult_lrt_rate)[diff_lrt_rate > 0.05]) %>% 
+                    dplyr::select(Gene) %>% 
+                    unique() %>%
+                    dplyr::mutate(Gene = gsub("[)]", "" , gsub(".* [(]", "", Gene))), Gene)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$H) 
+
+dotplot(over_res, showCategory=20, title = "H: peds rate - adults rate > 5%", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C2) 
+
+dotplot(over_res, showCategory=20, title = "C2: peds rate - adults rate > 5%", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C5) 
+
+dotplot(over_res, showCategory=20, title = "C5: peds rate - adults rate > 5%", font.size = 6)
+```
+
+#### Genes with adult LRT dep rate - peds LRT dep rate > 5%.
+
+```{r include=T}
+all_lrt_rate_by_type %>% 
+  filter(Gene %in% names(adult_lrt_rate)[diff_lrt_rate < -0.05]) %>% 
+  dplyr::select(Gene, p.value.adj, Group, lrt_rate) %>% 
+  unique() %>%
+  spread(., Group, lrt_rate) %>%
+  datatable(options=list(scrollX=T, order = list(list(2, 'desc'))), rownames = F)
+```
+
+```{r include=T}
+gene_list <- pull(all_lrt_rate_by_type %>% 
+                    filter(Gene %in% names(adult_lrt_rate)[diff_lrt_rate < -0.05]) %>% 
+                    dplyr::select(Gene) %>% 
+                    unique() %>%
+                    dplyr::mutate(Gene = gsub("[)]", "" , gsub(".* [(]", "", Gene))), Gene)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$H) 
+
+dotplot(over_res, showCategory=20, title = "H: adult rate - peds rate > 5%", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C2) 
+
+dotplot(over_res, showCategory=20, title = "C2: adult rate - peds rate > 5%", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C5) 
+
+dotplot(over_res, showCategory=20, title = "C5: adult rate - peds rate > 5%", font.size = 6)
+```
+
+#### Genes with adult LRT dep rate >2% and pediatric >2%.
+
+```{r include=T}
+all_lrt_rate_by_type %>% 
+  filter(Gene %in% names(adult_lrt_rate)[adult_lrt_rate > 0.02 & pediatric_lrt_rate > 0.02]) %>% 
+  dplyr::select(Gene, p.value.adj, Group, lrt_rate) %>% 
+  unique() %>%
+  spread(., Group, lrt_rate) %>%
+  datatable(options=list(scrollX=T, order = list(list(2, 'desc'))), rownames = F)
+```
+
+
+```{r include=T}
+gene_list <- pull(all_lrt_rate_by_type %>% 
+                    filter(Gene %in% names(adult_lrt_rate)[adult_lrt_rate > 0.02 & pediatric_lrt_rate > 0.02]) %>% 
+                    dplyr::select(Gene) %>% 
+                    unique() %>%
+                    dplyr::mutate(Gene = gsub("[)]", "" , gsub(".* [(]", "", Gene))), Gene)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$H) 
+
+dotplot(over_res, showCategory=20, title = "H: adult rate >2% and peds >2%", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C2) 
+
+dotplot(over_res, showCategory=20, title = "C2: adult rate >2% and peds >2%", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C5) 
+
+dotplot(over_res, showCategory=20, title = "C5: adult rate >2% and peds >2%", font.size = 6)
+```
+
+
+#### Genes with pediatric LRT dep rate >4% and double adults LRT dep rate.
+
+```{r include=T}
+all_lrt_rate_by_type %>% 
+  filter(Gene %in% names(adult_lrt_rate)[pediatric_lrt_rate > 0.04 & (pediatric_lrt_rate/adult_lrt_rate) > 2]) %>% 
+  dplyr::select(Gene, p.value.adj, Group, lrt_rate) %>% 
+  unique() %>%
+  spread(., Group, lrt_rate) %>%
+  datatable(options=list(scrollX=T, order = list(list(2, 'desc'))), rownames = F)
+```
+
+```{r include=T}
+gene_list <- pull(all_lrt_rate_by_type %>% 
+                    filter(Gene %in% names(adult_lrt_rate)[pediatric_lrt_rate > 0.04 & (pediatric_lrt_rate/adult_lrt_rate) > 2]) %>% 
+                    dplyr::select(Gene) %>% 
+                    unique() %>%
+                    dplyr::mutate(Gene = gsub("[)]", "" , gsub(".* [(]", "", Gene))), Gene)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$H) 
+
+dotplot(over_res, showCategory=20, title = "H: peds rate >4% and double adults rate", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C2) 
+
+dotplot(over_res, showCategory=20, title = "C2: peds rate >4% and double adults rate", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C5) 
+
+dotplot(over_res, showCategory=20, title = "C5: peds rate >4% and double adults rate", font.size = 6)
+```
+
+#### Genes with adult LRT dep rate >5% and pediatric >5%.
+
+```{r include=T}
+all_lrt_rate_by_type %>% 
+  filter(Gene %in% names(adult_lrt_rate)[adult_lrt_rate > 0.05 & pediatric_lrt_rate > 0.05]) %>% 
+  dplyr::select(Gene, p.value.adj, Group, lrt_rate) %>% 
+  unique() %>%
+  spread(., Group, lrt_rate) %>%
+  datatable(options=list(scrollX=T, order = list(list(2, 'desc'))), rownames = F)
+```
+
+```{r include=T}
+gene_list <- pull(all_lrt_rate_by_type %>% 
+                    filter(Gene %in% names(adult_lrt_rate)[adult_lrt_rate > 0.05 & pediatric_lrt_rate > 0.05]) %>% 
+                    dplyr::select(Gene) %>% 
+                    unique() %>%
+                    dplyr::mutate(Gene = gsub("[)]", "" , gsub(".* [(]", "", Gene))), Gene)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$H) 
+
+dotplot(over_res, showCategory=20, title = "H: adult rate >5% and peds >5%", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C2) 
+
+dotplot(over_res, showCategory=20, title = "C2: adult rate >5% and peds >5%", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C5) 
+
+dotplot(over_res, showCategory=20, title = "C5: adult rate >5% and peds >5%", font.size = 6)
+```
+
+#### Genes with adult LRT dep rate >0% or pediatric >0%.
+
+```{r include=T}
+all_lrt_rate_by_type %>% 
+  filter(Gene %in% names(adult_lrt_rate)[adult_lrt_rate > 0 | pediatric_lrt_rate > 0]) %>% 
+  dplyr::select(Gene, p.value.adj, Group, lrt_rate) %>% 
+  unique() %>%
+  spread(., Group, lrt_rate) %>%
+  datatable(options=list(scrollX=T, order = list(list(2, 'desc'))), rownames = F)
+
+write.table(all_lrt_rate_by_type %>% 
+  mutate(Group = gsub("\n"," ",Group)) %>%
+  filter(Gene %in% names(adult_lrt_rate)[adult_lrt_rate > 0 | pediatric_lrt_rate > 0]) %>% 
+  dplyr::select(Gene, p.value.adj, Group, lrt_rate) %>% 
+  unique() %>%
+  spread(., Group, lrt_rate),
+  file = "figures/dependency/depsLRT.txt", sep = "\t", row.names = F)
+```
+
+```{r include=T}
+gene_list <- pull(all_lrt_rate_by_type %>% 
+                    filter(Gene %in% names(adult_lrt_rate)[adult_lrt_rate > 0 | pediatric_lrt_rate > 0]) %>% 
+                    dplyr::select(Gene) %>% 
+                    unique() %>%
+                    dplyr::mutate(Gene = gsub("[)]", "" , gsub(".* [(]", "", Gene))), Gene)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$H) 
+
+dotplot(over_res, showCategory=20, title = "H: adult rate >0% or peds >0%", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C2) 
+
+dotplot(over_res, showCategory=20, title = "C2: adult rate >0% or peds >0%", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C5) 
+
+dotplot(over_res, showCategory=20, title = "C5: adult rate >0% or peds >0%", font.size = 6)
+```
+
+#### Genes with adult LRT dep rate >0% and pediatric >0%.
+
+```{r include=T}
+all_lrt_rate_by_type %>% 
+  filter(Gene %in% names(adult_lrt_rate)[adult_lrt_rate > 0 & pediatric_lrt_rate > 0]) %>% 
+  dplyr::select(Gene, p.value.adj, Group, lrt_rate) %>% 
+  unique() %>%
+  spread(., Group, lrt_rate) %>%
+  datatable(options=list(scrollX=T, order = list(list(2, 'desc'))), rownames = F)
+```
+
+```{r include=T}
+gene_list <- pull(all_lrt_rate_by_type %>% 
+                    filter(Gene %in% names(adult_lrt_rate)[adult_lrt_rate > 0 & pediatric_lrt_rate > 0]) %>% 
+                    dplyr::select(Gene) %>% 
+                    unique() %>%
+                    dplyr::mutate(Gene = gsub("[)]", "" , gsub(".* [(]", "", Gene))), Gene)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$H) 
+
+dotplot(over_res, showCategory=20, title = "H: adult rate >0% and peds >0%", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C2) 
+
+dotplot(over_res, showCategory=20, title = "C2: adult rate >0% and peds >0%", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C5) 
+
+dotplot(over_res, showCategory=20, title = "C5: adult rate >0% and peds >0%", font.size = 6)
+```
+
+#### Genes with pediatric LRT dep rate >2%.
+
+```{r include=T}
+all_lrt_rate_by_type %>% 
+  filter(Gene %in% names(adult_lrt_rate)[pediatric_lrt_rate > 0.02]) %>% 
+  dplyr::select(Gene, p.value.adj, Group, lrt_rate) %>% 
+  unique() %>%
+  spread(., Group, lrt_rate) %>%
+  datatable(options=list(scrollX=T, order = list(list(2, 'desc'))), rownames = F)
+```
+
+```{r include=T}
+gene_list <- pull(all_lrt_rate_by_type %>% 
+                    filter(Gene %in% names(adult_lrt_rate)[pediatric_lrt_rate > 0.02]) %>% 
+                    dplyr::select(Gene) %>% 
+                    unique() %>%
+                    dplyr::mutate(Gene = gsub("[)]", "" , gsub(".* [(]", "", Gene))), Gene)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$H) 
+
+dotplot(over_res, showCategory=20, title = "H: pediatric LRT dep rate >2%", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C2) 
+
+dotplot(over_res, showCategory=20, title = "C2: pediatric LRT dep rate >2%", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C5) 
+
+C5_peds_deps <- dotplot(over_res, showCategory=20, title = "C5: pediatric LRT dep rate >2%", font.size = 6)
+C5_peds_deps
+
+saveRDS(C5_peds_deps, file = paste0('figures/dependency/peds_LRT_deps_GSEA_C5_', version_to_use, '.rds'))
+ggsave(C5_peds_deps, filename = paste0('figures/dependency/peds_LRT_deps_GSEA_C5_', version_to_use, '.pdf'), 
+       height = 14, width=20, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+#### Genes with adult LRT dep rate >2%.
+
+```{r include=T}
+all_lrt_rate_by_type %>% 
+  filter(Gene %in% names(adult_lrt_rate)[adult_lrt_rate > 0.02]) %>% 
+  dplyr::select(Gene, p.value.adj, Group, lrt_rate) %>% 
+  unique() %>%
+  spread(., Group, lrt_rate) %>%
+  datatable(options=list(scrollX=T, order = list(list(2, 'desc'))), rownames = F)
+```
+
+```{r include=T}
+gene_list <- pull(all_lrt_rate_by_type %>% 
+                    filter(Gene %in% names(adult_lrt_rate)[adult_lrt_rate > 0.02]) %>% 
+                    dplyr::select(Gene) %>% 
+                    unique() %>%
+                    dplyr::mutate(Gene = gsub("[)]", "" , gsub(".* [(]", "", Gene))), Gene)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$H) 
+
+dotplot(over_res, showCategory=20, title = "H: adult LRT dep rate >2%", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C2) 
+
+dotplot(over_res, showCategory=20, title = "C2: adult LRT dep rate >2%", font.size = 6)
+
+over_res <- enricher(gene = gene_list, 
+                     universe = gsub("[)]", "" , gsub(".* [(]", "", colnames(gene_effect))),
+                     TERM2GENE = msigdb$C5) 
+
+C5_adult_deps <- dotplot(over_res, showCategory=20, title = "C5: adult LRT dep rate >2%", font.size = 6)
+C5_adult_deps
+
+saveRDS(C5_adult_deps, file = paste0('figures/dependency/adult_LRT_deps_GSEA_C5_', version_to_use, '.rds'))
+ggsave(C5_adult_deps, filename = paste0('figures/dependency/adult_LRT_deps_GSEA_C5_', version_to_use, '.pdf'), 
+       height = 14, width=20, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+### Circle plots
+
+```{r include=T, fig.width=2, fig.height=2}
+# Gene specific plots by lineage for pedi and adult
+
+GeneCirclePlot <- function(gene, dataset, datasetname)
+{
+  gene <- colnames(dataset)[grepl(gene, colnames(dataset))][1]
+  data_for_gene <- as.data.frame(cbind(rownames(dataset), dataset[,gene,drop=F])) %>%
+    dplyr::rename(DepMap_ID = V1) %>% 
+    mutate(dependency = as.numeric(.[[2]]) > 0.5) %>% 
+    filter(!is.na(dependency)) %>%
+    left_join(., mf %>% dplyr::select(DepMap_ID, CCLE_name, Type, PvA), by='DepMap_ID') %>% 
+    group_by(Type) %>%
+    mutate(n_lines = n()) %>%
+    dplyr::add_count(dependency) %>%
+    ungroup() %>% 
+    dplyr::select(Type, dependency, n_lines, n, PvA) %>%
+    unique() %>%
+    filter(n_lines > 2) %>%
+    spread(., dependency, n)
+  if ("TRUE" %in% names(data_for_gene))
+  {
+    data_for_gene$rate <- data_for_gene$`TRUE` / data_for_gene$n_lines 
+  } else 
+  { 
+    data_for_gene$rate <- NA
+  }
+  data_for_gene %<>% mutate(rate = ifelse(is.na(rate), 0, rate))
+  
+  x_labels <- paste0(data_for_gene$Type, "\n(n=", data_for_gene$n_lines, ")")
+  names(x_labels) <- data_for_gene$Type
+  
+  number_of_bar = length(x_labels)
+  label_data <- as.data.frame(x_labels)
+  names(label_data) <- "label"
+  label_data$id = as.numeric(as.factor(label_data$label))
+  angle = 90 - 360 * (label_data$id-0.5) /number_of_bar
+  label_data$hjust <-ifelse(angle < -90, 1, 0)
+  label_data$angle <-ifelse(angle < -90, angle+180, angle)
+  
+  yaxislabel <- as.data.frame(c(0, 0.5, 1))
+  names(yaxislabel) <- "y"
+  yaxislabel$label <- c("0.0", "0.5", "1.0")
+
+  xlabel_title <- ""
+  if (grepl("ped", datasetname)) { xlabel_title = "Pediatric"}
+  if (grepl("adult", datasetname)) { xlabel_title = "Adult"}
+  
+  plot_to_save <- ggplot(data_for_gene, aes(x = Type, y = rate, fill = Type, color = Type)) + 
+    geom_hline(yintercept = 0, size = 0.12) +
+    geom_hline(yintercept = 0.25, size = 0.12) +
+    geom_hline(yintercept = 0.5, size = 0.12) +
+    geom_hline(yintercept = 0.75, size = 0.12) +
+    geom_hline(yintercept = 1, size = 0.12) +
+    geom_col(width=0.98, alpha=0.75) +
+    coord_polar(clip = "off") + 
+    scale_fill_manual(values=complete_type_colors) +
+    scale_color_manual(values=complete_type_colors) +
+    scale_x_discrete(labels = x_labels, position = "top") +
+    ylab(gsub(" .*", "", gene)) +
+    xlab(xlabel_title) + 
+    scale_y_continuous(limits = c(-0.25,1), breaks = seq(0, 1, 0.25)) +
+    theme_minimal() +
+    theme(legend.position = "none",
+          axis.ticks = element_blank(),
+          axis.text = element_blank(),
+          axis.line = element_blank(),
+          panel.grid = element_blank(),
+          strip.background = element_blank(),
+          strip.text = element_blank(),
+          plot.margin = margin(0.25, 0.25, 0.25, 0.25, "cm")) +
+   geom_text(data=yaxislabel, aes(x = 0, y = y, label=label), size = 3, color="black", inherit.aes = FALSE)
+    # geom_text(data=label_data, aes(x = id, y = 1.05, label=label, hjust=hjust),
+    #           color="darkgray", size=3,
+    #           angle= label_data$angle, inherit.aes = FALSE )
+  #   facet_wrap(~PvA)
+  
+  saveRDS(plot_to_save, file = paste0("figures/dependency/gene_", 
+                                      gsub(" .*", "", gene), "_", datasetname, "_", version_to_use,".rds"))
+  ggsave(plot_to_save, filename = paste0('figures/dependency/gene_', 
+                                         gsub(" .*", "", gene), "_", datasetname, "_", version_to_use, '.pdf'), 
+         height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+  return(plot_to_save)
+}
+
+GeneCirclePlotLegend <- function(name, dataset)
+{
+  data_for_gene <- as.data.frame(cbind(rownames(dataset))) %>%
+    dplyr::rename(DepMap_ID = V1) %>% 
+    left_join(., mf %>% dplyr::select(DepMap_ID, CCLE_name, Type, PvA), by='DepMap_ID') %>%
+    group_by(Type) %>%
+    mutate(n = n()) %>%
+    filter(n > 2) %>%
+    mutate(rate = 1)
+
+  x_labels <- paste0(data_for_gene$Type, " (n=", data_for_gene$n, ")")
+  names(x_labels) <- data_for_gene$Type
+  
+  plot_to_save <- ggplot(data_for_gene %>% dplyr::select(Type, rate) %>% unique(), 
+                         aes(x = Type, y = rate, fill = Type, color = Type)) + 
+    geom_col(width=0.98, alpha=0.75) +
+    coord_polar(clip = "off") + 
+    scale_fill_manual(values=complete_type_colors, labels = x_labels) +
+    scale_color_manual(values=complete_type_colors, labels = x_labels) +
+    guides(color=guide_legend(title='Tumor type', ncol=1), fill=guide_legend(title='Tumor type', ncol=1)) +
+    ggtitle(gsub(" .*", "", gene)) +
+    scale_y_continuous(limits = c(-0.25,1.05), breaks = seq(0, 1, 0.25)) +
+    theme_minimal() +
+    theme(legend.position = "right",
+          legend.title = element_blank(),
+          axis.text.y = element_text(margin = margin(r = -160)),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.text.x = element_blank(),
+          axis.line.x = element_blank(),
+          panel.grid = element_blank(),
+          strip.background = element_blank(),
+          strip.text = element_blank(),
+          plot.margin = margin(0.25, 0.25, 0.25, 0.25, "cm"),
+          legend.text=element_text(size=8),
+          legend.key.size = unit(0.5,"line")) 
+  legend_to_save <- ggpubr::get_legend(plot_to_save) 
+  
+  saveRDS(legend_to_save, file = paste0("figures/dependency/gene_legend_", name, "_", version_to_use,".rds"))
+  ggsave(legend_to_save, filename = paste0('figures/dependency/gene_legend_', name, "_", version_to_use, '.pdf'), height = 14, width = 18, units = 'cm', device = 'pdf', useDingbats=FALSE)
+  return(legend_to_save)
+}
+
+gene <- "IGF1R"
+GeneCirclePlot(gene, gene_dependency_peds, "peds")
+GeneCirclePlot(gene, gene_dependency_adult, "adult")
+
+gene <- "HDAC2"
+GeneCirclePlot(gene, gene_dependency_peds, "peds")
+GeneCirclePlot(gene, gene_dependency_adult, "adult")
+
+gene <- "TRIM8"
+GeneCirclePlot(gene, gene_dependency_peds, "peds")
+GeneCirclePlot(gene, gene_dependency_adult, "adult")
+
+gene <- "ISL1"
+GeneCirclePlot(gene, gene_dependency_peds, "peds")
+GeneCirclePlot(gene, gene_dependency_adult, "adult")
+
+gene <- "PHOX2B"
+GeneCirclePlot(gene, gene_dependency_peds, "peds")
+GeneCirclePlot(gene, gene_dependency_adult, "adult")
+
+gene <- "PHOX2A"
+GeneCirclePlot(gene, gene_dependency_peds, "peds")
+GeneCirclePlot(gene, gene_dependency_adult, "adult")
+
+gene <- "HAND2"
+GeneCirclePlot(gene, gene_dependency_peds, "peds")
+GeneCirclePlot(gene, gene_dependency_adult, "adult")
+
+gene <- "GATA3"
+GeneCirclePlot(gene, gene_dependency_peds, "peds")
+GeneCirclePlot(gene, gene_dependency_adult, "adult")
+
+gene <- "MYOD1"
+GeneCirclePlot(gene, gene_dependency_peds, "peds")
+GeneCirclePlot(gene, gene_dependency_adult, "adult")
+
+grid.newpage()
+grid.draw(GeneCirclePlotLegend("adult", gene_dependency_adult))
+grid.newpage()
+grid.draw(GeneCirclePlotLegend("peds", gene_dependency_peds))
+```
+
+### Heatmap of selective dependencies in at least 3 pediatric cell lines
+
+```{r include=T, fig.height=20, fig.width=10}
+gene_dependency_gt_0_5_peds <- gene_dependency_peds[, colSums(gene_dependency_peds[,] > 0.5, na.rm=T)>2 & 
+                                                      colnames(gene_dependency_peds) %in% lrt_genes_ceres]
+
+rowname_ccle <- gsub("_.*", "", mf$CCLE_name[mf$DepMap_ID %in% rownames(gene_dependency_gt_0_5_peds)])
+names(rowname_ccle) <- mf$DepMap_ID[mf$DepMap_ID %in% rownames(gene_dependency_peds)]
+
+rowname_type <- as.data.frame(mf$Type[mf$DepMap_ID %in% rownames(gene_dependency_gt_0_5_peds)])
+colnames(rowname_type) <- "Tumor type"
+rownames(rowname_type) <- mf$DepMap_ID[mf$DepMap_ID %in% rownames(gene_dependency_peds)]
+
+pheatmap(t(gene_dependency_gt_0_5_peds > 0.5) + 0, 
+         labels_col = rowname_ccle, 
+         fontsize = 6, 
+         annotation_col = rowname_type,
+         annotation_colors = list("Tumor type" = color_for_subtypes_vector), 
+         color = c("white", "red"),
+         legend = F)
+```
+
+## Enriched dependencies
+
+```{r}
+pediatric_tumor_types <- mf %>% 
+  distinct(Type, PvA) %>% 
+  filter(PvA=='Pediatric') %$% 
+  Type
+```
+
+```{r}
+# Do a two group comparison for all the different pediatric tumor types vs. all and then plot the p values with an effect size below some cutoff
+# Only perform comparison if at least 3 lines in a tumor type
+source("R/run_lm_stats_limma.R")
+
+if (!file.exists('data/tumor_type_enriched_dependencies_all.csv'))
+{
+  results_two_groups <- data.frame(gene=colnames(gene_effect), stringsAsFactors = F)
+  for (tumor_type in unique(mf %$% unique(Type))) {
+    print(tumor_type)
+    if ((mf %>% filter(Type==tumor_type) %$% length(intersect(DepMap_ID, row.names(gene_effect)))) < 3) {
+      next
+    }
+    
+    # Run two group comparison
+    comp_out <- gene_effect %>% run_lm_stats_limma(., row.names(.) %in% (mf %>% filter(Type==tumor_type) %$% DepMap_ID), target_type = 'gene')
+    
+    results_two_groups %<>% inner_join(., 
+                                       comp_out %>% 
+                                         dplyr::select(gene, EffectSize, p.left, q.left) %>% 
+                                         set_colnames(c('gene', paste0('ES_', tumor_type), paste0('p_', tumor_type), paste0('q_', tumor_type))), 
+                                       by='gene')
+  }
+  
+  fwrite(results_two_groups, file='data/tumor_type_enriched_dependencies_all.csv')
+} else
+{
+  results_two_groups <- fread('data/tumor_type_enriched_dependencies_all.csv')
+}
+```
+
+
+### Number of cell lines in tumor type vs number of enriched dependencies {.tabset .tabset-fade}
+
+#### All enriched dependencies
+
+```{r include=TRUE}
+# Format the plotting matrix
+tumor_type_CL_counts <- mf %>% filter(DepMap_ID %in% row.names(gene_effect)) %>%
+  distinct(DepMap_ID, Type) %>%
+  group_by(Type) %>%
+  dplyr::summarise(count=n()) %>%
+  mutate(Type2=paste0(Type, ' (n=', count, ')'))
+
+enriched_for_plot <- results_two_groups %>%
+  gather(sl, value, -gene) %>%
+  mutate(stat=gsub('_.*', '', sl), Type=gsub("[.]"," ",gsub('.*_', '', sl))) %>%
+  dplyr::select(-sl) %>%
+  spread(., stat, value) %>%
+  # Compute a new FDR on all the p values
+  mutate(FDR=p.adjust(p)) %>%
+  inner_join(., tumor_type_CL_counts, by = "Type") 
+
+Type_label <- unique(enriched_for_plot$Type2)
+names(Type_label) <- gsub(" [(].*","",Type_label)
+
+compare_num_enricheddeps_num_lines <- ggplot(enriched_for_plot %>% 
+                                               group_by(Type) %>%
+                                               mutate(n_sig_deps = sum(FDR < 0.05 & ES < 0)) %>%
+                                               dplyr::select(count, n_sig_deps, Type, Type2) %>%
+                                               unique(), 
+                                             aes(count, n_sig_deps, fill=Type, color=Type, label=Type2)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  geom_text_repel(size=2, color="black", segment.size = 0.2) + 
+  scale_fill_manual(values=complete_type_colors, labels = Type_label) +
+  scale_color_manual(values=complete_type_colors, labels = Type_label) +
+  theme_bw() +
+  xlab('Number of cell lines in tumor type') + ylab('Number of enriched\ntotal dependencies') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+saveRDS(compare_num_enricheddeps_num_lines, file = paste0('figures/dependency/deps_v_num_CLs_', version_to_use, '.rds'))
+ggsave(compare_num_enricheddeps_num_lines, filename = paste0('figures/dependency/deps_v_num_CLs_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+compare_num_enricheddeps_num_lines
+```
+
+
+#### Enriched selective dependencies
+
+```{r include=TRUE}
+compare_num_enricheddeps_num_lines <- ggplot(enriched_for_plot %>% 
+                                               group_by(Type) %>%
+                                               mutate(n_sig_deps = sum(FDR < 0.05 & ES < 0 & gene %in% lrt_genes_ceres)) %>%
+                                               dplyr::select(count, n_sig_deps, Type, Type2) %>%
+                                               unique(), 
+                                             aes(count, n_sig_deps, fill=Type, color=Type, label=Type2)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  geom_text_repel(size=2, color="black", segment.size = 0.2) + 
+  scale_fill_manual(values=complete_type_colors, labels = Type_label) +
+  scale_color_manual(values=complete_type_colors, labels = Type_label) +
+  theme_bw() +
+  xlab('Number of cell lines in tumor type') + ylab('Number of enriched\nselective dependencies') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+saveRDS(compare_num_enricheddeps_num_lines, file = paste0('figures/dependency/depsLRT_v_num_CLs_', version_to_use, '.rds'))
+ggsave(compare_num_enricheddeps_num_lines, filename = paste0('figures/dependency/depsLRT_v_num_CLs_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+compare_num_enricheddeps_num_lines
+```
+
+
+### Enriched dependencies by tumor type plots {.tabset .tabset-fade}
+
+#### Peds only, highlight selective deps
+
+```{r include=T}
+thresh_for_cutoff <- -0.2
+for_plot_arranged <- enriched_for_plot %>%
+  filter(ES < thresh_for_cutoff, Type %in% pediatric_types) %>%
+  mutate(Type3 = ifelse(gene %in% lrt_genes_ceres, Type, "Non-selective")) %>%
+  mutate(Type2 = factor(Type2, levels=unique(Type2[order(-count)])))
+
+enricheddeps_peds <- ggplot(for_plot_arranged, aes(Type2, -log10(FDR), fill=Type3, color=Type3, size=-ES, label=gene)) +
+  geom_point(pch=21, alpha=0.75) +
+  geom_label_repel(data=for_plot_arranged %>% filter(FDR < 1e-20 & Type3 != "Non-selective"), aes(Type2, -log10(FDR), label=gsub(" .*","",gene)), size=2, fill=rgb(1,1,1,0.5)) + 
+  coord_cartesian(clip = "off") +
+  scale_fill_manual(values=c(color_for_subtypes_vector, "Non-selective"="gray")) +
+  scale_color_manual(values=c(color_for_subtypes_vector, "Non-selective"="gray")) +
+  guides(color=FALSE, fill=FALSE, size=guide_legend(title='Effect size', 
+                                                    title.position = 'top', 
+                                                    override.aes = list(alpha=0.5, color='black', fill='grey'))) +
+  theme_bw() +
+  xlab('') + ylab('-log10(q-value)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='right',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+
+saveRDS(enricheddeps_peds, file = paste0('figures/dependency/peds_enriched_deps_', thresh_for_cutoff, '_', version_to_use, '.rds'))
+ggsave(enricheddeps_peds, filename = paste0('figures/dependency/peds_enriched_deps_', thresh_for_cutoff, '_', version_to_use, '.pdf'), 
+       width=20, height=12, units='cm', device='pdf', useDingbats = FALSE)
+
+enricheddeps_peds
+```
+
+#### Highlight transcription factors
+
+```{r}
+# Load transcription factors from https://www.cell.com/cell/fulltext/S0092-8674(18)30106-5
+# The Human Transcription Factors.
+# Lambert SA, Jolma A, Campitelli LF, Das PK, Yin Y, Albu M, Chen X, Taipale J, Hughes TR, Weirauch MT.
+# Cell. 2018 Feb 8;172(4):650-665. doi: 10.1016/j.cell.2018.01.029.
+# PMID: 29425488 
+
+TFs <- read_xlsx("input_files/10.1016 - j.cell.2018.01.029 - mmc2-3.xlsx", sheet = 2, col_names = c(as.character(seq(1, 32)))) %>% 
+  filter(`4` == "Yes")
+```
+
+```{r include=TRUE}
+thresh_for_cutoff <- -0.2
+for_plot_arranged <- enriched_for_plot %>%
+  filter(ES < thresh_for_cutoff) %>%
+  mutate(Type3 = ifelse(gsub(" .*", "", gene) %in% unlist(TFs[,2]), Type, "Non-TF")) %>%
+  mutate(Type2 = factor(Type2, levels=unique(Type2[order(-count)])))
+
+tfs_peds_v_adults <- ggplot(for_plot_arranged, aes(Type2, -log10(FDR), fill=Type3, color=Type3, size=-ES, label=gene)) +
+  geom_point(pch=21, alpha=0.75) +
+  geom_label_repel(data=for_plot_arranged %>% filter(FDR < 1e-20 & Type3 != "Non-TF"), aes(Type2, -log10(FDR), label=gsub(" .*","",gene)), size=2, fill=rgb(1,1,1,0.5)) + 
+  coord_cartesian(clip = "off") +
+  scale_fill_manual(values=c(complete_type_colors, "Non-TF"="gray")) +
+  scale_color_manual(values=c(complete_type_colors, "Non-TF"="gray")) +
+  guides(color=FALSE, fill=FALSE, size=guide_legend(title='Effect size', 
+                                                    title.position = 'top', 
+                                                    override.aes = list(alpha=0.5, color='black', fill='grey'))) +
+  theme_bw() +
+  xlab('') + ylab('-log10(q-value)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='right',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+
+tfs_peds_v_adults
+
+saveRDS(tfs_peds_v_adults, file = paste0('figures/dependency/tfs_highlighted_enriched_deps_', thresh_for_cutoff, '_', version_to_use, '.rds'))
+ggsave(tfs_peds_v_adults, filename = paste0('figures/dependency/tfs_highlighted_enriched_deps_', thresh_for_cutoff, '_', version_to_use, '.pdf'), 
+       width=20, height=12, units='cm', device='pdf', useDingbats = FALSE)
+```
+
+
+## Session Info
+
+```{r session_info, include=TRUE, echo=TRUE, results='markup'}
+devtools::session_info()
+```
+
+```{r include=TRUE}
+as.data.frame(`Dataset Used`) %>% datatable(options=list(scrollX=T))
+```

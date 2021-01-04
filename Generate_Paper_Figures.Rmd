@@ -1,0 +1,823 @@
+---
+title: "Generate Paper Figures"
+author: "ndharia"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(grid)
+library(ggpubr)
+library(extrafont)
+suppressWarnings(loadfonts())
+library(pheatmap)
+library(stringr)
+
+if(!dir.exists('final_figures')) { dir.create('final_figures') }
+```
+
+```{r}
+fig1_theme <- theme(text=element_text(size=8, face="plain"),
+                    strip.text=element_text(size=8, face="plain"),
+                    plot.title=element_text(size=8, face="plain"),
+                    axis.text=element_text(size=8),
+                    axis.title=element_text(size=8, face="plain"), 
+                    plot.background = element_blank(), 
+                    panel.background = element_blank(),
+                    legend.text=element_text(size=8),
+                    legend.key.size = unit(0.5,"line"),
+                    axis.line=element_line(size=0.12),
+                    axis.ticks=element_line(size=0.12),
+                    legend.margin=margin(t=0, unit='cm'),
+                    plot.margin = margin(0.25, 0.25, 0.25, 0.25, "cm"))
+
+```
+
+```{r, fig.height=10}
+fig1a <- readRDS('figures/cell_line_features/Pediatric (CRISPR only)_20q1.rds')
+fig1b <- readRDS('figures/tumor_cl/tumor_cl_reannotated_pediatric_2_20q1.rds')
+fig1c <- readRDS('figures/mutation/mutsig_rates_in_WES_20q1.rds')
+fig1d <- readRDS('figures/mutation/peds_v_other_mutsig_across_lineages_in_WES_20q1.rds')
+
+# decrease size of dots
+fig1c$layers[[1]]$aes_params$size <- 1
+
+fig1c$labels$y <- gsub("MutSig2CV ", "MutSig2CV\n", fig1c$labels$y)
+fig1d$labels$y <- gsub("MutSig2CV ", "MutSig2CV\n", fig1d$labels$y)
+
+# decrease size of p-value text
+fig1d$layers[[3]]$aes_params$textsize <- 2
+
+# decrease size of violin outline
+fig1d$layers[[1]]$aes_params$size <- 0
+# outlier alpha
+fig1d$layers[[2]]$geom_params$outlier.alpha <- 0.25
+
+# decrease size of dots
+#fig1b$layers[[1]]$aes_params$size <- 2
+
+# adjust legend
+fig1a$guides$fill$nrow <- NULL
+fig1a$guides$fill$ncol <- NULL
+
+fig1b$guides$shape$override.aes$size <- 1
+fig1b$guides$fill$override.aes$size <- 1
+fig1b$labels$title <- "Tumor-cell line expression"
+fig1b$guides$fill$title <- "Tumor type"
+
+fig1 <- ggarrange(ggarrange(fig1a + fig1_theme + 
+                    theme(legend.position = "right", 
+                          axis.text.x=element_text(size=3), 
+                          axis.text.y=element_text(size=5), 
+                          axis.line=element_blank(),
+                          axis.ticks = element_blank()), 
+                    geom_blank(),
+                    widths = c(2, 0.25),
+                    ncol = 2,
+                    nrow = 1,
+                    labels = c("a", "")),
+                  ggarrange(fig1b + fig1_theme + theme(aspect.ratio=1), 
+                            geom_blank(),
+                            widths = c(2, 0.75),
+                            ncol = 2,
+                            nrow = 1,
+                            labels = c("b", "")),
+                  ggarrange(fig1c + fig1_theme, 
+                            fig1d + fig1_theme, 
+                            widths = c(2, 0.75),
+                            ncol = 2, 
+                            nrow = 1, 
+                            align = "h",
+                            labels = c("c", "d")), 
+                  nrow =3, 
+                  ncol=1,
+                  heights = c(3.5, 3, 3))
+
+ggsave(fig1, filename = "final_figures/Fig1.pdf", width=20 , height=26, units='cm', useDingbats = FALSE)
+print(fig1)
+```
+
+```{r, fig.height=10}
+fig2a <- readRDS('figures/dependency/dep_example_distribution_20q1.rds')
+fig2b <- readRDS('figures/mutation/depsLRT_v_mutsig_across_lineages_in_WES_20q1.rds')
+fig2c <- readRDS('figures/dependency/total_lrt_dependencies_median_arranged_20q1.rds')
+fig2d <- readRDS('figures/dependency/peds_v_other_LRTdeps_all_20q1.rds')
+fig2e <- readRDS('figures/biomarkers/lrt_rate_vs_biomarker_20q1.rds')
+fig2f <- readRDS('figures/dependency/umap_cell_line_dependency_lrt_20q1.rds')
+
+# decrease size of lines
+fig2a$labels$y <- "Distribution of cell lines"
+fig2a$layers[[2]]$aes_params$size <- 4
+
+# decrease size of dots
+fig2b$layers[[1]]$aes_params$size <- 1
+fig2b$labels$y <- gsub("MutSig2CV ", "MutSig2CV\n", fig2b$labels$y)
+
+# decrease size of dots
+fig2c$layers[[1]]$aes_params$size <- 1
+
+# decrease size of p-value text
+fig2d$layers[[3]]$aes_params$textsize <- 2
+fig2d$layers[[3]]$aes_params$size <- 2
+
+# decrease size of violin outline
+fig2d$layers[[1]]$aes_params$size <- 0
+fig2d$layers[[2]]$geom_params$outlier.alpha <- 0.25
+
+fig2d$labels$y <- fig2c$labels$y
+
+fig2e$labels$title <- "Predictive models"
+
+# decrease size of dots
+fig2f$layers[[1]]$aes_params$size <- 2
+fig2f$labels$title <- "Dependency embedding"
+
+fig2 <- ggarrange(ggarrange(fig2a + fig1_theme,
+                            fig2b + fig1_theme + theme(aspect.ratio=1),
+                            widths = c(2, 3),
+                            ncol = 2,
+                            nrow = 1,
+                            labels = c("a", "b")),
+                  ggarrange(fig2c + fig1_theme, 
+                            fig2d + fig1_theme, 
+                            widths = c(2, 0.75),
+                            ncol = 2, 
+                            nrow = 1, 
+                            align = "h",
+                            labels = c("c", "d")), 
+                  ggarrange(fig2e + fig1_theme + theme(aspect.ratio=1, legend.position = "bottom"), 
+                            ggarrange(fig2f + fig1_theme + theme(aspect.ratio=1, legend.position = "right"), geom_blank(),
+                                      heights = c(2, 0.3),
+                                      ncol = 1,
+                                      nrow = 2),
+                            widths = c(2, 3.5),
+                            ncol = 2,
+                            nrow = 1,
+                            align = "h",
+                            labels = c("e", "f")),
+                  nrow =3, 
+                  ncol=1,
+                  heights = c(3, 3, 3.5),
+                  align = "v")
+
+ggsave(fig2, filename = "final_figures/Fig2.pdf", width=20 , height=26, units='cm', useDingbats = FALSE)
+print(fig2)
+```
+
+
+```{r, fig.height=10}
+fig3a <- readRDS('figures/targets/dep_heatmap_horz_ALK_20q1.rds')
+fig3b <- readRDS('figures/targets/dep_heatmap_horz_BRAF_20q1.rds')
+fig3c <- readRDS('figures/targets/dep_heatmap_horz_MDM2_MDM4_20q1.rds')
+fig3d <- readRDS('figures/targets/dep_heatmap_horz_CDK4_CDK6_20q1.rds')
+fig3e <- readRDS('figures/targets/dep_heatmap_horz_BCL2_MCL1_20q1.rds')
+fig3_legend1 <- readRDS('figures/targets/dep_heatmap_horz_legend1_20q1.rds')
+fig3_legend2 <- readRDS('figures/targets/dep_heatmap_horz_legend2_20q1.rds')
+
+font_for_grob <- 3
+names(font_for_grob) <- "italics"
+
+for (i in 1:length(fig3_legend2$gtable[["grobs"]][[3]]$children))
+{
+  if (!is.null(fig3_legend2$gtable[["grobs"]][[3]]$children[[i]]$label))
+  {
+    cat(i)
+    fig3_legend2$gtable[["grobs"]][[3]]$children[[i]]$label <- gsub("biomarker", "Biomarker", fig3_legend2$gtable[["grobs"]][[3]]$children[[i]]$label)
+    fig3_legend2$gtable[["grobs"]][[3]]$children[[i]]$label <- gsub("tumor_type", "Tumor type", fig3_legend2$gtable[["grobs"]][[3]]$children[[i]]$label)
+  }
+  if (!is.null(fig3_legend2$gtable[["grobs"]][[3]]$children[[i]]$gp$fontface))
+  {
+    if (fig3_legend2$gtable[["grobs"]][[3]]$children[[i]]$gp$fontface == "bold")
+    {
+      fig3_legend2$gtable[["grobs"]][[3]]$children[[i]]$gp$fontface <- "italics"
+      fig3_legend2$gtable[["grobs"]][[3]]$children[[i]]$gp$font <- as.integer(font_for_grob)
+    }
+  }
+}
+
+library("gridExtra")
+lay <- rbind(c(1,6),
+             c(2,7),
+             c(3,NA),
+             c(4,NA),
+             c(5,NA))
+
+fig3_heatmaps <- arrangeGrob(fig3a[[4]], 
+                             fig3b[[4]],
+                             fig3c[[4]], 
+                             fig3d[[4]],
+                             fig3e[[4]],
+                             fig3_legend1[[4]],
+                             fig3_legend2[[4]],
+                             layout_matrix = lay,
+                             widths=c(4, 0.6),
+                             padding = unit(0.25, "cm"))
+
+ggsave(fig3_heatmaps, filename = "final_figures/Fig3.pdf", width=35, height=30, units='cm', useDingbats = FALSE)
+grid.draw(fig3_heatmaps)
+```
+
+
+```{r, fig.height=10}
+fig3f <- readRDS('figures/mcl1_compare/depmap_sanger_20q1.rds')
+
+fig3f$layers[[1]]$aes_params$size <- 1
+
+fig3f <- ggarrange(ggarrange(fig3f + fig1_theme + theme(aspect.ratio=1), 
+                             geom_blank(), 
+                             ncol = 2,
+                             align="h",
+                             widths=c(1,1),
+                             labels = c("f", "g")),
+                     geom_blank(),
+                     nrow=2, 
+                     ncol=1,
+                     heights  = c(2, 4))
+
+ggsave(fig3f, filename = "final_figures/Fig3f.pdf", width=20 , height=26, units='cm', useDingbats = FALSE)
+print(fig3f)
+```
+
+
+```{r, fig.height=10}
+fig4a <- readRDS('figures/dependency/ped_v_adult_fraction_dependent_20q1.rds')
+fig4b <- readRDS('figures/dependency/ped_v_adult_sig_fraction_dependent_20q1.rds')
+fig4c_TRIM8_p <- readRDS('figures/dependency/gene_TRIM8_peds_20q1.rds')
+fig4c_TRIM8_a <- readRDS('figures/dependency/gene_TRIM8_adult_20q1.rds')
+fig4c_HDAC2_p <- readRDS('figures/dependency/gene_HDAC2_peds_20q1.rds')
+fig4c_HDAC2_a <- readRDS('figures/dependency/gene_HDAC2_adult_20q1.rds')
+fig4c_IGF1R_p <- readRDS('figures/dependency/gene_IGF1R_peds_20q1.rds')
+fig4c_IGF1R_a <- readRDS('figures/dependency/gene_IGF1R_adult_20q1.rds')
+fig4c_legend_p <- readRDS('figures/dependency/gene_legend_peds_20q1.rds')
+fig4c_legend_a <- readRDS('figures/dependency/gene_legend_adult_20q1.rds')
+
+fig4c_TRIM8_a$labels$y <- "Adult"
+fig4c_HDAC2_a$labels$y <- ""
+fig4c_IGF1R_a$labels$y <- ""
+fig4c_TRIM8_p$labels$y <- "Pediatric"
+fig4c_HDAC2_p$labels$y <- ""
+fig4c_IGF1R_p$labels$y <- ""
+
+fig4c_TRIM8_a$labels$x <- ""
+fig4c_HDAC2_a$labels$x <- ""
+fig4c_IGF1R_a$labels$x <- ""
+fig4c_TRIM8_p$labels$x <- "TRIM8"
+fig4c_HDAC2_p$labels$x <- "HDAC2"
+fig4c_IGF1R_p$labels$x <- "IGF1R"
+
+fig4c_theme <- theme(plot.margin = margin(-0.5, -0.5, 0, -0.5, "cm"),
+                       axis.title  = element_text(size=8, face="plain"),
+                       plot.background = element_blank())
+
+fig4d <- readRDS('figures/dependency/peds_LRT_deps_GSEA_C5_20q1.rds')
+fig4e <- readRDS('figures/dependency/adult_LRT_deps_GSEA_C5_20q1.rds')
+
+fig4d$labels$title <- "Pediatric selective dependencies"
+fig4e$labels$title <- "Adult selective dependencies"
+
+fig4f <- readRDS('figures/dependency/peds_enriched_deps_-0.2_20q1.rds')
+
+fig4 <- ggarrange(ggarrange(fig4a + fig1_theme,
+                            fig4b + fig1_theme + 
+                              theme(axis.text.y = element_text(size=4)),
+                            nrow=1,
+                            ncol=2,
+                            align = "h",
+                            labels = c("a", "b")),
+                  ggarrange(
+                    ggarrange(fig4c_TRIM8_p + fig4c_theme , 
+                              fig4c_HDAC2_p + fig4c_theme, 
+                              fig4c_IGF1R_p + fig4c_theme, 
+                              fig4c_TRIM8_a + fig4c_theme,
+                              fig4c_HDAC2_a + fig4c_theme,
+                              fig4c_IGF1R_a + fig4c_theme,
+                              nrow=2, ncol=3,
+                              align="hv") + theme(plot.margin = margin(0.25, 0.25, 0.25, 1, "cm")),
+                    ggarrange(fig4c_legend_p, geom_blank(), ncol=1, heights=c(1, 2.6)),
+                    ggarrange(fig4c_legend_a, geom_blank(), ncol=1, heights=c(1, 0.05)),
+                    nrow=1,
+                    widths= c(2,1,1),
+                    align="h",
+                    labels = c("c", "", "")),
+                  ggarrange(
+                    ggarrange(fig4d + fig1_theme + theme(axis.text.y = element_text(size=4)) + scale_size(range = c(0,3)), 
+                              fig4e + fig1_theme + theme(axis.text.y = element_text(size=4)) + scale_size(range = c(0,3)), 
+                              nrow=2, ncol=1, heights = c(1,1), align="v",
+                              labels = c("d", "e")),
+                    fig4f + fig1_theme + theme(legend.position = "bottom"),
+                    ncol = 2,
+                    widths = c(1.5, 1),
+                    labels = c("", "f")),
+                  nrow=3, 
+                  ncol=1,
+                  heights  = c(2, 1.5, 3))
+
+ggsave(fig4, filename = "final_figures/Fig4.pdf", width=20 , height=26, units='cm', useDingbats = FALSE)
+print(fig4)
+```
+
+
+
+```{r, fig.height=10}
+extfig1_1 <- readRDS('figures/tumor_cl/tumor_cl_reannotated_2_Ewing20q1.rds')
+extfig1_2 <- readRDS('figures/tumor_cl/tumor_cl_reannotated_2_Hepatoblastoma20q1.rds')
+extfig1_3 <- readRDS('figures/tumor_cl/tumor_cl_reannotated_2_Medulloblastoma20q1.rds')
+extfig1_4 <- readRDS('figures/tumor_cl/tumor_cl_reannotated_2_Neuroblastoma20q1.rds')
+extfig1_5 <- readRDS('figures/tumor_cl/tumor_cl_reannotated_2_Osteosarcoma20q1.rds')
+extfig1_6 <- readRDS('figures/tumor_cl/tumor_cl_reannotated_2_Pediatric CNS PNET20q1.rds')
+extfig1_7 <- readRDS('figures/tumor_cl/tumor_cl_reannotated_2_Pediatric Germ Cell20q1.rds')
+extfig1_8 <- readRDS('figures/tumor_cl/tumor_cl_reannotated_2_Pediatric Glioma20q1.rds')
+extfig1_9 <- readRDS('figures/tumor_cl/tumor_cl_reannotated_2_Pediatric Sarcoma20q1.rds')
+extfig1_10 <- readRDS('figures/tumor_cl/tumor_cl_reannotated_2_Renal Medullary Carcinoma20q1.rds')
+extfig1_11 <- readRDS('figures/tumor_cl/tumor_cl_reannotated_2_Retinoblastoma20q1.rds')
+extfig1_12 <- readRDS('figures/tumor_cl/tumor_cl_reannotated_2_Rhabdoid20q1.rds')
+extfig1_13 <- readRDS('figures/tumor_cl/tumor_cl_reannotated_2_Rhabdomyosarcoma20q1.rds')
+extfig1_14 <- readRDS('figures/tumor_cl/tumor_cl_reannotated_2_Synovial Sarcoma20q1.rds')
+
+for(plot_to_mod in seq(1, 14, 1))
+{
+  # decrease size of dots
+  #eval(parse(text=paste0("extfig1_", plot_to_mod, "$layers[[1]]$aes_params$size <- 2")))
+  
+  # decrease size of text labels and change alpha
+  eval(parse(text=paste0("extfig1_", plot_to_mod, "$layers[[2]]$aes_params$size <- 1")))
+  eval(parse(text=paste0("extfig1_", plot_to_mod, "$layers[[2]]$aes_params$alpha <- 1")))
+  
+  # change label seg line size and alpha 
+  eval(parse(text=paste0("extfig1_", plot_to_mod, "$layers[[2]]$geom_params$segment.size <- 0.2")))
+  eval(parse(text=paste0("extfig1_", plot_to_mod, "$layers[[2]]$geom_params$segment.alpha <- 0.5")))
+
+  # modify legend
+  eval(parse(text=paste0("extfig1_", plot_to_mod, "$guides$shape$override.aes$size <- 2")))
+  eval(parse(text=paste0("extfig1_", plot_to_mod, "$guides$fill$override.aes$size <- 2")))
+  
+  # remove title
+  eval(parse(text=paste0("extfig1_", plot_to_mod, "$labels$title <- NULL")))
+  
+  if((plot_to_mod - 1) %% 3 != 0)
+  {
+    eval(parse(text=paste0("extfig1_", plot_to_mod, "$labels$y <- NULL")))
+  }
+  
+  eval(parse(text=paste0("extfig1_", plot_to_mod, "$labels$x <- NULL")))
+}
+
+extfig1_theme <- theme(aspect.ratio=1, legend.text = element_text(size=6), legend.title = element_text(size=6), legend.position = c(1,1))
+
+extfig1 <- ggarrange(extfig1_1 + fig1_theme + extfig1_theme, 
+                     extfig1_2 + fig1_theme + extfig1_theme, 
+                     extfig1_3 + fig1_theme + extfig1_theme, 
+                     extfig1_4 + fig1_theme + extfig1_theme, 
+                     extfig1_5 + fig1_theme + extfig1_theme, 
+                     extfig1_6 + fig1_theme + extfig1_theme, 
+                     extfig1_7 + fig1_theme + extfig1_theme, 
+                     extfig1_8 + fig1_theme + extfig1_theme, 
+                     extfig1_9 + fig1_theme + extfig1_theme, 
+                     extfig1_10 + fig1_theme + extfig1_theme, 
+                     extfig1_11 + fig1_theme + extfig1_theme, 
+                     extfig1_12 + fig1_theme + extfig1_theme, 
+                     extfig1_13 + fig1_theme + extfig1_theme, 
+                     extfig1_14 + fig1_theme + extfig1_theme, 
+                  nrow=5, 
+                  ncol=3, 
+                  align="v")
+
+ggsave(extfig1, filename = "final_figures/extFig1.pdf", width=20 , height=26, units='cm', useDingbats = FALSE)
+print(extfig1)
+```
+
+
+```{r, fig.height=10}
+extfig2a <- readRDS('figures/tumor_cl/undiff_tumor_cl_rennotated_pediatrics_all20q1.rds')
+extfig2b <- readRDS('figures/tumor_cl/tumor_cl_reannotated_uncorrected20q1.rds')
+extfig2c <- readRDS('figures/mutation/total_mutations_across_lineages_in_WES_20q1.rds')
+extfig2d <- readRDS('figures/mutation/peds_v_other_total_mutations_across_lineages_in_WES_20q1.rds')
+extfig2e <- readRDS('figures/mutation/total_COSMICgenefiltered_mutations_across_lineages_in_WES_20q1.rds')
+extfig2f <- readRDS('figures/mutation/peds_v_other_COSMICgene_mutations_across_lineages_in_WES_20q1.rds')
+
+# decrease size of dots
+extfig2c$layers[[1]]$aes_params$size <- 1
+extfig2d$layers[[1]]$aes_params$size <- 1
+extfig2e$layers[[1]]$aes_params$size <- 1
+extfig2f$layers[[1]]$aes_params$size <- 1
+
+# decrease size of p-value text
+extfig2d$layers[[3]]$aes_params$textsize <- 2
+extfig2f$layers[[3]]$aes_params$textsize <- 2
+
+# decrease size of dots
+#extfig2a$layers[[1]]$aes_params$size <- 1
+#extfig2b$layers[[1]]$aes_params$size <- 1
+
+extfig2a$guides$shape$override.aes$size <- 1
+extfig2a$guides$fill <- FALSE
+extfig2a$labels$title <- "Tumor-cell line expression"
+extfig2a$guides$shape$nrow <- 8
+extfig2a$guides$shape$title.position <- "top"
+
+extfig2b$guides$shape <- FALSE
+extfig2b$guides$fill$override.aes$size <- 1
+extfig2b$labels$title <- "Tumor-cell line expression"
+extfig2b$guides$fill$title <- "Tumor type"
+extfig2b$guides$fill$nrow <- 8
+extfig2b$guides$fill$title.position <- "top"
+
+# decrease size of violin outline
+extfig2d$layers[[1]]$aes_params$size <- 0
+extfig2d$layers[[2]]$geom_params$outlier.alpha <- 0.25
+extfig2f$layers[[1]]$aes_params$size <- 0
+extfig2f$layers[[2]]$geom_params$outlier.alpha <- 0.25
+
+extfig2 <- ggarrange(
+                  ggarrange(extfig2a + fig1_theme + theme(aspect.ratio=1, legend.position = "bottom"), 
+                            extfig2b + fig1_theme + theme(aspect.ratio=1, legend.position = "bottom"),
+                            widths = c(2, 2),
+                            ncol = 2,
+                            nrow = 1, 
+                            align = "h",
+                            labels = c("a", "b")),
+                  ggarrange(extfig2c + fig1_theme, 
+                            extfig2d + fig1_theme, 
+                            widths = c(2, 0.75),
+                            ncol = 2, 
+                            nrow = 1, 
+                            align = "h",
+                            labels = c("c", "d")),
+                  ggarrange(extfig2e + fig1_theme, 
+                            extfig2f + fig1_theme, 
+                            widths = c(2, 0.75),
+                            ncol = 2, 
+                            nrow = 1, 
+                            align = "h",
+                            labels = c("e", "f")), 
+                  nrow =3, 
+                  ncol=1,
+                  heights = c(3.5, 2.5, 2.5))
+
+ggsave(extfig2, filename = "final_figures/extFig2.pdf", width=20 , height=26, units='cm', useDingbats = FALSE)
+print(extfig2)
+```
+
+
+```{r, fig.height=10}
+extfig3a <- readRDS('figures/copy_number/cna_by_lineage_plot20q1.rds')
+extfig3b <- readRDS('figures/copy_number/peds_v_adult_cna_plot20q1.rds')
+extfig3c <- readRDS('figures/copy_number/pediatric_cn_across_lines20q1.rds')
+extfig3d <- readRDS('figures/copy_number/fusions_by_lineage_plot20q1.rds')
+extfig3e <- readRDS('figures/copy_number/peds_v_adult_fusion_plot20q1.rds')
+
+# decrease size of dots
+extfig3a$layers[[1]]$aes_params$size <- 1
+extfig3d$layers[[1]]$aes_params$size <- 1
+
+# decrease size of p-value text
+extfig3b$layers[[3]]$aes_params$textsize <- 2
+extfig3e$layers[[3]]$aes_params$textsize <- 2
+
+# decrease size of violin outline
+extfig3b$layers[[1]]$aes_params$size <- 0
+extfig3b$layers[[2]]$geom_params$outlier.alpha <- 0.25
+extfig3e$layers[[1]]$aes_params$size <- 0
+extfig3e$layers[[2]]$geom_params$outlier.alpha <- 0.25
+
+extfig3 <- ggarrange(
+                  ggarrange(extfig3a + fig1_theme, 
+                            extfig3b + fig1_theme, 
+                            widths = c(2, 0.75),
+                            ncol = 2, 
+                            nrow = 1, 
+                            align = "h",
+                            labels = c("a", "b")), 
+                  extfig3c,
+                  ggarrange(extfig3d + fig1_theme, 
+                            extfig3e + fig1_theme, 
+                            widths = c(2, 0.75),
+                            ncol = 2, 
+                            nrow = 1, 
+                            align = "h",
+                            labels = c("d", "e")), 
+                  nrow =3, 
+                  ncol=1,
+                  heights = c(3, 3, 3),
+                  labels = c("", "c", ""))
+
+ggsave(extfig3, filename = "final_figures/extFig3.pdf", width=20 , height=26, units='cm', useDingbats = FALSE)
+print(extfig3)
+```
+
+```{r, fig.height=10}
+extfig4a <- readRDS('figures/mutation/depsLRT_v_total_mutations_across_lineages_in_WES_20q1.rds')
+extfig4b <- readRDS('figures/mutation/depsLRT_v_total_COSMICgene_mutations_across_lineages_in_WES_20q1.rds')
+extfig4c <- readRDS('figures/copy_number/depsLRT_v_cnas_across_lineages_20q1.rds')
+extfig4d <- readRDS('figures/copy_number/depsLRT_v_fusions_across_lineages_20q1.rds')
+extfig4e <- readRDS('figures/dependency/total_lrt_dependencies_lineage_size_arranged_20q1.rds')
+
+# decrease size of dots
+extfig4a$layers[[1]]$aes_params$size <- 1
+extfig4b$layers[[1]]$aes_params$size <- 1
+extfig4c$layers[[1]]$aes_params$size <- 1
+extfig4d$layers[[1]]$aes_params$size <- 1
+extfig4e$layers[[1]]$aes_params$size <- 1
+
+extfig4 <- ggarrange(ggarrange(extfig4a + fig1_theme + theme(aspect.ratio=1), 
+                               extfig4b + fig1_theme + theme(aspect.ratio=1), 
+                               ncol = 2,
+                               nrow = 1,
+                               align = "h",
+                               labels = c("a", "b")),
+                     ggarrange(extfig4c + fig1_theme + theme(aspect.ratio=1), 
+                               extfig4d + fig1_theme + theme(aspect.ratio=1), 
+                               ncol = 2,
+                               nrow = 1,
+                               align = "h",
+                               labels = c("c", "d")),
+                     ggarrange(extfig4e + fig1_theme,
+                               geom_blank(), 
+                               widths = c(2, 0.75),
+                               ncol = 2, 
+                               nrow = 1, 
+                               align = "h",
+                               labels = c("e", "")),  
+                     nrow =3, 
+                     ncol=1,
+                     heights = c(3, 3, 3.5))
+
+ggsave(extfig4, filename = "final_figures/extFig4.pdf", width=20 , height=26, units='cm', useDingbats = FALSE)
+print(extfig4)
+```
+
+
+```{r, fig.height=10}
+extfig5a <- readRDS('figures/mutation/deps_v_NNMD_20q1.rds')
+extfig5b <- readRDS('figures/mutation/deps_v_Cas9_20q1.rds')
+extfig5c <- readRDS('figures/mutation/deps_v_growth_20q1.rds')
+extfig5d <- readRDS('figures/mutation/deps_v_FDR_TPM0_20q1.rds')
+extfig5e <- readRDS('figures/mutation/deps_v_media_20q1.rds')
+extfig5f <- readRDS('figures/mutation/deps_v_mets_20q1.rds')
+extfig5g <- readRDS('figures/mutation/deps_v_tx_20q1.rds')
+
+# decrease size of dots
+extfig5a$layers[[1]]$aes_params$size <- 1
+extfig5b$layers[[1]]$aes_params$size <- 1
+extfig5c$layers[[1]]$aes_params$size <- 1
+extfig5d$layers[[1]]$aes_params$size <- 1
+extfig5e$layers[[1]]$aes_params$size <- 1
+extfig5f$layers[[1]]$aes_params$size <- 1
+extfig5g$layers[[1]]$aes_params$size <- 1
+
+# decrease size of violin outline
+extfig5e$layers[[1]]$aes_params$size <- 0
+extfig5e$layers[[2]]$geom_params$outlier.alpha <- 0.25
+extfig5f$layers[[1]]$aes_params$size <- 0
+extfig5f$layers[[2]]$geom_params$outlier.alpha <- 0.25
+extfig5g$layers[[1]]$aes_params$size <- 0
+extfig5g$layers[[2]]$geom_params$outlier.alpha <- 0.25
+
+extfig5 <- ggarrange(ggarrange(extfig5a + fig1_theme + theme(aspect.ratio=1), 
+                               extfig5b + fig1_theme + theme(aspect.ratio=1), 
+                               ncol = 2,
+                               nrow = 1,
+                               align = "h",
+                               labels = c("a", "b")),
+                     ggarrange(extfig5c + fig1_theme + theme(aspect.ratio=1), 
+                               extfig5d + fig1_theme + theme(aspect.ratio=1), 
+                               ncol = 2,
+                               nrow = 1,
+                               align = "h",
+                               labels = c("c", "d")),
+                     ggarrange(extfig5e + fig1_theme + theme(aspect.ratio=1), 
+                               extfig5f + fig1_theme + theme(aspect.ratio=1), 
+                               extfig5g + fig1_theme + theme(aspect.ratio=1), 
+                               ncol = 3,
+                               nrow = 1,
+                               align = "h",
+                               labels = c("e", "f", "g")),
+                     nrow =3, 
+                     ncol=1,
+                     heights = c(3, 3, 3))
+
+ggsave(extfig5, filename = "final_figures/extFig5.pdf", width=20 , height=26, units='cm', useDingbats = FALSE)
+print(extfig5)
+```
+
+
+```{r, fig.height=10}
+extfig6a <- readRDS('figures/biomarkers/pearson_dist_lrt_genes_20q1.rds')
+extfig6b <- readRDS('figures/biomarkers/biomarker_peds_vs_all_20q1.rds')
+
+extfig6 <- ggarrange(extfig6a + fig1_theme,
+                     ggarrange(extfig6b + fig1_theme + theme(aspect.ratio=1),
+                               geom_blank(),
+                               nrow=1,
+                               ncol=2,
+                               widths = c(3,1)),
+                     geom_blank(),
+                     nrow=3, 
+                     ncol=1,
+                     heights = c(2, 4, 3),
+                     align = "v",
+                     labels = c("a", "b", ""))
+
+ggsave(extfig6, filename = "final_figures/extFig6.pdf", width=20 , height=26, units='cm', useDingbats = FALSE)
+print(extfig6)
+```
+
+
+```{r, fig.height=10}
+extfig7a <- readRDS('figures/dependency/umap_zoom_peds_colored_cell_line_dependency_lrt_20q1.rds')
+extfig7b <- readRDS('figures/dependency/expr_clus_v_dep_clus_dep500_expr_2000_20q1.rds')
+extfig7c <- readRDS('figures/expression/expr_lineage_similarity_top_2000_20q1.rds')
+extfig7d <- readRDS('figures/expression/expression_pcs_dist_to_center_top2000_20q1.rds')
+extfig7e <- readRDS('figures/dependency/dep_lineage_similarity_top_500_20q1.rds')
+extfig7f <- readRDS('figures/dependency/dep_pcs_dist_to_center_top500_20q1.rds')
+
+# decrease size of dots
+extfig7a$layers[[1]]$aes_params$size <- 2
+extfig7a$labels$title <- "Dependency embedding"
+extfig7a$layers[[2]]$aes_params$size <- 1
+extfig7a$layers[[2]]$geom_params$segment.size <- 0.2
+extfig7a$layers[[2]]$geom_params$segment.alpha <- 0.5
+
+# decrease size of dots
+extfig7b$layers[[1]]$aes_params$size <- 1
+extfig7c$layers[[1]]$aes_params$size <- 1
+extfig7d$layers[[1]]$aes_params$size <- 1
+extfig7e$layers[[1]]$aes_params$size <- 1
+extfig7f$layers[[1]]$aes_params$size <- 1
+
+extfig7 <- ggarrange(ggarrange(extfig7a + fig1_theme + theme(aspect.ratio=1, legend.text = element_text(size=6)), 
+                               extfig7b + fig1_theme + theme(aspect.ratio=1),
+                               nrow=1,
+                               labels = c("a", "b")),
+                     ggarrange(extfig7c + fig1_theme, extfig7d + fig1_theme, nrow=1, widths = c(2,2),
+                               labels = c("c", "d")),
+                     ggarrange(extfig7e + fig1_theme, extfig7f + fig1_theme, nrow=1, widths = c(2,2),
+                               labels = c("e", "f")), 
+                     nrow =3, 
+                     ncol=1,
+                     heights = c(4, 2.5, 2.5))
+
+ggsave(extfig7, filename = "final_figures/extFig7.pdf", width=20 , height=26, units='cm', useDingbats = FALSE)
+print(extfig7)
+```
+
+ 
+```{r, fig.height=10}
+extfig8a <- readRDS('figures/mcl1_compare/depmap_demeter_drive_20q1.rds')
+extfig8b <- readRDS('figures/biomarkers/pred_features_scatter_MCL1_BCL2L120q1.rds')
+
+extfig8a$layers[[1]]$aes_params$size <- 1
+extfig8b$layers[[1]]$aes_params$size <- 1
+
+extfig8 <- ggarrange(ggarrange(extfig8a + fig1_theme + theme(aspect.ratio=1), 
+                               extfig8b + fig1_theme + theme(aspect.ratio=1), 
+                               ncol = 2,
+                               align="h",
+                               labels = c("a", "b")),
+                     geom_blank(),
+                     geom_blank(),
+                     geom_blank(),
+                     nrow=4, 
+                     ncol=1,
+                     heights  = c(2, 2, 2, 2),
+                     labels = c("", "c", "d", "e"))
+
+ggsave(extfig8, filename = "final_figures/extFig8.pdf", width=20 , height=26, units='cm', useDingbats = FALSE)
+print(extfig8)
+```
+
+
+```{r, fig.height=10}
+extfig9a_ISL1_p <- readRDS('figures/dependency/gene_ISL1_peds_20q1.rds')
+extfig9a_ISL1_a <- readRDS('figures/dependency/gene_ISL1_adult_20q1.rds')
+extfig9a_HAND2_p <- readRDS('figures/dependency/gene_HAND2_peds_20q1.rds')
+extfig9a_HAND2_a <- readRDS('figures/dependency/gene_HAND2_adult_20q1.rds')
+extfig9a_GATA3_p <- readRDS('figures/dependency/gene_GATA3_peds_20q1.rds')
+extfig9a_GATA3_a <- readRDS('figures/dependency/gene_GATA3_adult_20q1.rds')
+extfig9a_legend_p <- readRDS('figures/dependency/gene_legend_peds_20q1.rds')
+extfig9a_legend_a <- readRDS('figures/dependency/gene_legend_adult_20q1.rds')
+
+extfig9a_ISL1_a$labels$y <- "Adult"
+extfig9a_HAND2_a$labels$y <- ""
+extfig9a_GATA3_a$labels$y <- ""
+extfig9a_ISL1_p$labels$y <- "Pediatric"
+extfig9a_HAND2_p$labels$y <- ""
+extfig9a_GATA3_p$labels$y <- ""
+
+extfig9a_ISL1_a$labels$x <- ""
+extfig9a_HAND2_a$labels$x <- ""
+extfig9a_GATA3_a$labels$x <- ""
+extfig9a_ISL1_p$labels$x <- "ISL1"
+extfig9a_HAND2_p$labels$x <- "HAND2"
+extfig9a_GATA3_p$labels$x <- "GATA3"
+
+extfig9a_PHOX2A_p <- readRDS('figures/dependency/gene_PHOX2A_peds_20q1.rds')
+extfig9a_PHOX2A_a <- readRDS('figures/dependency/gene_PHOX2A_adult_20q1.rds')
+extfig9a_PHOX2B_p <- readRDS('figures/dependency/gene_PHOX2B_peds_20q1.rds')
+extfig9a_PHOX2B_a <- readRDS('figures/dependency/gene_PHOX2B_adult_20q1.rds')
+extfig9a_MYOD1_p <- readRDS('figures/dependency/gene_MYOD1_peds_20q1.rds')
+extfig9a_MYOD1_a <- readRDS('figures/dependency/gene_MYOD1_adult_20q1.rds')
+
+extfig9a_PHOX2A_a$labels$y <- "Adult"
+extfig9a_PHOX2B_a$labels$y <- ""
+extfig9a_MYOD1_a$labels$y <- ""
+extfig9a_PHOX2A_p$labels$y <- "Pediatric"
+extfig9a_PHOX2B_p$labels$y <- ""
+extfig9a_MYOD1_p$labels$y <- ""
+
+extfig9a_PHOX2A_a$labels$x <- ""
+extfig9a_PHOX2B_a$labels$x <- ""
+extfig9a_MYOD1_a$labels$x <- ""
+extfig9a_PHOX2A_p$labels$x <- "PHOX2A"
+extfig9a_PHOX2B_p$labels$x <- "PHOX2B"
+extfig9a_MYOD1_p$labels$x <- "MYOD1"
+
+extfig9a_theme <- theme(plot.margin = margin(-0.5, -0.5, 0, -0.5, "cm"),
+                       axis.title  = element_text(size=8, face="plain"),
+                       plot.background = element_blank())
+
+extfig9b <- readRDS('figures/biomarkers/pred_features_HDAC2 (3066)20q1.rds')
+extfig9c <- readRDS('figures/biomarkers/pred_features_IGF1R (3480)20q1.rds')
+
+extfig9 <- ggarrange(ggarrange(
+                              ggarrange(extfig9a_ISL1_p + extfig9a_theme , 
+                                         extfig9a_HAND2_p + extfig9a_theme, 
+                                         extfig9a_GATA3_p + extfig9a_theme, 
+                                         extfig9a_ISL1_a + extfig9a_theme,
+                                         extfig9a_HAND2_a + extfig9a_theme,
+                                         extfig9a_GATA3_a + extfig9a_theme,
+                                         nrow=2, ncol=3,
+                                         align="hv") + theme(plot.margin = margin(0.25, 0.25, 0.25, 1, "cm")),
+                               ggarrange(extfig9a_legend_p, geom_blank(), ncol=1, heights=c(1, 1.5)),
+                               ggarrange(extfig9a_legend_a, geom_blank(), ncol=1, heights=c(1, 0.05)),
+                               nrow=1,
+                               widths= c(2,1,1),
+                               align="h"),
+                     ggarrange(
+                       ggarrange(extfig9a_PHOX2A_p + extfig9a_theme , 
+                                 extfig9a_PHOX2B_p + extfig9a_theme, 
+                                 extfig9a_MYOD1_p + extfig9a_theme, 
+                                 extfig9a_PHOX2A_a + extfig9a_theme,
+                                 extfig9a_PHOX2B_a + extfig9a_theme,
+                                 extfig9a_MYOD1_a + extfig9a_theme,
+                                 nrow=2, ncol=3,
+                                 align="hv") + theme(plot.margin = margin(0.25, 0.25, 0.25, 1, "cm")),
+                       geom_blank(),
+                       geom_blank(),
+                       nrow=1,
+                       widths= c(2,1,1)),
+                     ggarrange(extfig9b + fig1_theme + theme(aspect.ratio=1), 
+                               extfig9c + fig1_theme + theme(aspect.ratio=1), 
+                               ncol = 2,
+                               align="h",
+                               labels = c("b", "c")),
+                     nrow=3, 
+                     ncol=1,
+                     heights  = c(2, 2, 2),
+                     labels = c("a", "", ""))
+
+ggsave(extfig9, filename = "final_figures/extFig9.pdf", width=20 , height=26, units='cm', useDingbats = FALSE)
+print(extfig9)
+``` 
+ 
+```{r, fig.height=10}
+extfig10a <- readRDS('figures/dependency/deps_v_num_CLs_20q1.rds')
+extfig10b <- readRDS('figures/dependency/depsLRT_v_num_CLs_20q1.rds')
+extfig10c <- readRDS('figures/dependency/tfs_highlighted_enriched_deps_-0.2_20q1.rds')
+
+extfig10a$layers[[1]]$aes_params$size <- 1
+extfig10b$layers[[1]]$aes_params$size <- 1
+extfig10a$layers[[2]]$aes_params$size <- 1
+extfig10b$layers[[2]]$aes_params$size <- 1
+
+extfig10 <- ggarrange(ggarrange(extfig10a + fig1_theme + theme(aspect.ratio=1), 
+                                extfig10b + fig1_theme + theme(aspect.ratio=1), 
+                                ncol = 2,
+                                align="h",
+                                labels = c("a", "b")),
+                      extfig10c + fig1_theme,
+                      geom_blank(),
+                      nrow=3, 
+                      ncol=1,
+                      heights  = c(2, 3, 1),
+                      labels = c("", "c"))
+
+ggsave(extfig10, filename = "final_figures/extFig10.pdf", width=20 , height=26, units='cm', useDingbats = FALSE)
+print(extfig10)
+```
+
+```{r}
+source('setup.R')
+source('load_data.R')
+extended_data_table_2 <- fread('Celligner/PedDep_Celligner_results.csv')
+undiff_cluster <- fread('Celligner/undifferentiated_cluster_07022020.csv')
+
+extended_data_table_2 %<>% 
+  dplyr::left_join(., mf %>% dplyr::select(DepMap_ID, CCLE_name, PvA) %>% dplyr::rename(sampleID = CCLE_name), by = "sampleID") %>%
+  dplyr::mutate(undifferentiated_cluster = sampleID %in% undiff_cluster$sampleID_CCLE_Name) %>%
+  dplyr::select(sampleID, DepMap_ID, PvA, dplyr::everything()) %>%
+  dplyr::arrange(type, DepMap_ID)
+
+write.table(extended_data_table_2, file = "figures/tumor_cl/ExtendedDataTable2.txt", sep = "\t", row.names = F)
+```
+

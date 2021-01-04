@@ -1,0 +1,399 @@
+---
+title: "Known and Potential Targets Figures"
+author: "Neekesh Dharia & Guillaume Kugener"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include=FALSE, message=FALSE, warning = FALSE)
+source('setup.R')
+source('load_data.R')
+```
+
+
+# Generated using: `r toupper(version_to_use)`
+
+
+```{r load_needed_datasets}
+# This script uses the following datasets:
+mf <- mf
+gene_cn <- load_gene_cn()
+gene_dependency <- load_gene_dependency()
+gene_effect <- load_gene_effect()
+mutations <- load_mutations()
+fusions <- load_fusions()
+gene_expression <- load_gene_expression()
+
+gene_lrt_table <- load_lrt_table()
+achilles_common_essentials <- load_achilles_common_essentials()
+
+if(!dir.exists('figures')) { dir.create('figures') }
+if(!dir.exists('figures/targets')) { dir.create('figures/targets') }
+```
+
+The table below highlights all of the cell lines that are included in the analyses and the types that they are annotated as:
+
+```{r}
+cell_lines_included_table <- rbind(
+  data.frame(name=row.names(gene_dependency), stringsAsFactors = F) %>% mutate(Source='Dependency'),
+  data.frame(name=row.names(gene_expression), stringsAsFactors = F) %>% mutate(Source='Expression'),
+  data.frame(name=unique(mutations$Tumor_Sample_Barcode), stringsAsFactors = F) %>% mutate(Source='Mutation'),
+  data.frame(name=(row.names(gene_cn)), stringsAsFactors = F) %>% mutate(Source='CN'),
+  data.frame(name=unique(fusions$DepMap_ID), stringsAsFactors = F) %>% mutate(Source='Fusions')) %>% mutate(value=1) %>% mutate(DepMap_ID=(name)) %>%
+  spread(., Source, value) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, CCLE_name, Type), by='DepMap_ID') %>%
+  dplyr::select(DepMap_ID, CCLE_name, everything())
+```
+
+```{r include=TRUE} 
+cell_lines_included_table %>% datatable(options=list(scrollX=T))
+```
+
+# Overview
+
+* Produce heatmaps of dependency of known and potential candidates
+
+```{r}
+DepMapID_to_CCLE <- function(mf, DepMapIDs) {
+  mf_table <- mf %>% dplyr::select(DepMap_ID, CCLE_name)
+  rownames(mf_table) <- mf_table$DepMap_ID
+  if (sum(DepMapIDs %in% rownames(mf_table)) == length(DepMapIDs))
+  {
+    return (mf_table[DepMapIDs, "CCLE_name"])
+  } else
+  {
+    return (DepMapIDs)
+  }
+}
+
+gene_dependency_peds <- gene_dependency[rownames(gene_dependency) %in% (mf$DepMap_ID[mf$PvA == 'Pediatric']), ]
+rownames(gene_dependency_peds) %<>% DepMapID_to_CCLE(mf, .)
+rownames(gene_dependency_peds) %<>% gsub("_.*", "", .)
+
+gene_effect_peds <- gene_effect[rownames(gene_effect) %in% (mf$DepMap_ID[mf$PvA == 'Pediatric']), ]
+rownames(gene_effect_peds) %<>% DepMapID_to_CCLE(mf, .)
+rownames(gene_effect_peds) %<>% gsub("_.*", "", .)
+
+gene_expression_peds <- gene_expression[rownames(gene_expression) %in% (mf$DepMap_ID[mf$PvA == 'Pediatric']), ]
+rownames(gene_expression_peds) %<>% DepMapID_to_CCLE(mf, .)
+rownames(gene_expression_peds) %<>% gsub("_.*", "", .)
+
+mutations_peds <- mutations[mutations$DepMap_ID %in% (mf$DepMap_ID[mf$PvA == 'Pediatric']), ] %>%
+  mutate(CCLE_name = DepMapID_to_CCLE(mf, DepMap_ID))
+
+fusions_peds <- fusions[fusions$DepMap_ID %in% (mf$DepMap_ID[mf$PvA == 'Pediatric']), ] %>%
+  mutate(CCLE_name = DepMapID_to_CCLE(mf, DepMap_ID))
+fusions_peds$`LeftGene` <- gsub(" .*","",fusions_peds$`LeftGene`)
+fusions_peds$`RightGene` <- gsub(" .*","",fusions_peds$`RightGene`)
+
+gene_cn_peds <- gene_cn[rownames(gene_cn) %in% (mf$DepMap_ID[mf$PvA == 'Pediatric']),]
+rownames(gene_cn_peds) %<>% DepMapID_to_CCLE(mf, .)
+gene_cn_peds[is.na(gene_cn_peds)] <- Inf
+
+annotdf <- data.frame(row.names = gsub("_.*", "", mf$CCLE_name[mf$PvA == 'Pediatric' & mf$CCLE_name != ""]), 
+                      `Tumor type` = mf$Type[mf$PvA == 'Pediatric' & mf$CCLE_name != ""], check.names = FALSE)  
+annotdf <- annotdf[rownames(gene_dependency_peds),,drop=F]
+```
+
+```{r}
+draw_colnames_90 <- function (coln, gaps, ...) {
+    coord <- pheatmap:::find_coordinates(length(coln), gaps)
+    x     <- coord$coord - 0.5 * coord$size
+    res   <- grid::textGrob(
+      coln, x = x, y = unit(1, "npc") - unit(3,"bigpts"),
+      vjust = 0.75, hjust = 1, rot = 90, gp = grid::gpar(...)
+    )
+    return(res)
+}
+assignInNamespace(
+  x = "draw_colnames",
+  value = "draw_colnames_90",
+  ns = asNamespace("pheatmap")
+)
+```
+
+```{r, include=TRUE, fig.width=12}
+# make plots
+genes_for_heatmap_list <- list(BCL2MCL1 = c("BCL2", "MCL1"), 
+                               MDM2MDM4 = c("MDM2", "MDM4"), 
+                               APEC1621F = c("ALK"), #APEC1621F ENSARTINIB
+                               APEC1621G = c("BRAF"), #APEC1621G vemurafenib
+                               APEC1621I = c("CDK4", "CDK6")) #APEC1621I palbociclib
+
+target_annotation_1 <- list(BCL2MCL1 = c(), 
+                               MDM2MDM4 = unlist(unname(mutations_peds %>% 
+                                                          filter(Hugo_Symbol %in% c("TP53"), Variant_annotation != "silent") %>% 
+                                                          dplyr::select(CCLE_name))), # TP53 non-silent mutations
+                               APEC1621F =  c(unlist(mutations_peds %>% filter(Hugo_Symbol %in% c("ALK"), isCOSMIChotspot == "TRUE") %>%
+                                                       dplyr::select(CCLE_name)), 
+                                              unlist(fusions_peds %>% filter(`RightGene` %in% c("ALK") | 
+                                                                               `LeftGene` %in% c("ALK", "ROS1"),
+                                                                             CCLE_count <= 10) %>% 
+                                                       dplyr::select(CCLE_name))), #ALK mutations, fusions
+                               APEC1621G = c(unlist(mutations_peds %>% 
+                                                      filter(Hugo_Symbol %in% c("BRAF"), Protein_Change == "p.V600E") %>% 
+                                                      dplyr::select(CCLE_name))), #BRAF V600E
+                               APEC1621I = c(unlist(mutations_peds %>% 
+                                                      filter(Hugo_Symbol %in% c("RB1"), Variant_Classification != "Silent") %>% 
+                                                      dplyr::select(CCLE_name))) # RB1 mutation
+)
+
+target_annotation_2 <- list(BCL2MCL1 = c(), 
+                               MDM2MDM4 = unlist(unname(mutations_peds %>% 
+                                                          filter(Hugo_Symbol %in% c("TP53"), Variant_annotation != "silent", isTCGAhotspot) %>%
+                                                          dplyr::select(CCLE_name))), # TP53 hotspot mutations
+                               APEC1621F = c(), #APEC1621F ENSARTINIB
+                               APEC1621G = c(), #APEC1621G vemurafenib
+                               APEC1621I = rownames(gene_cn_peds)[gene_cn_peds[,"CDK4 (1019)",drop=F] > log2(1.4 + 1)] # CDK4 amplified
+)
+
+target_annotation_3 <- list(BCL2MCL1 = c(), 
+                               MDM2MDM4 = rownames(gene_cn_peds)[gene_cn_peds[,"MDM2 (4193)",drop=F] > log2(1.4 + 1)], # MDM2 amplified
+                               APEC1621F = c(), #APEC1621F ENSARTINIB
+                               APEC1621G = c(), #APEC1621G vemurafenib
+                               APEC1621I = rownames(gene_cn_peds)[gene_cn_peds[,"CDK6 (1021)",drop=F] > log2(1.4 + 1)] # CDK6 amplified
+)
+
+target_annotation_4 <- list(BCL2MCL1 = c(), 
+                               MDM2MDM4 = rownames(gene_cn_peds)[gene_cn_peds[,"MDM4 (4194)",drop=F] > log2(1.4 + 1)], # MDM4 amplified
+                               APEC1621F = c(), #APEC1621F ENSARTINIB
+                               APEC1621G = c(), #APEC1621G vemurafenib
+                               APEC1621I = c())  #APEC1621I palbociclib
+
+
+for(name in names(genes_for_heatmap_list))
+{
+  annotdf_specific = data.frame(annotdf, check.names = FALSE)
+  annotcol_specific = list(`Tumor type` = color_for_subtypes_vector)
+  
+  if(!is.null(target_annotation_1[[name]]) | !is.null(target_annotation_2[[name]]))
+  {
+    targetable = matrix("none", nrow=nrow(annotdf), ncol=1, dimnames = list(rownames(annotdf), "biomarker"))
+    targetable[rownames(targetable) %in% gsub("_.*","",target_annotation_1[[name]]),1] <- "include"
+    targetable[rownames(targetable) %in% gsub("_.*","",target_annotation_2[[name]]),1] <- "exclude"
+    
+    annotdf_specific = data.frame(annotdf, targetable = targetable, check.names = FALSE)
+    annotcol_specific = list(`Tumor type` = color_for_subtypes_vector,
+                             targetable = c(none="white", include="green", exclude="red"))
+  } 
+  if("ALK" %in% genes_for_heatmap_list[[name]])
+  {
+    targetable = matrix("none", nrow=nrow(annotdf), ncol=1, dimnames = list(rownames(annotdf), "ALK mutation/fusion"))
+    targetable[rownames(targetable) %in% gsub("_.*","",target_annotation_1[[name]]),1] <- "ALK mutation/fusion"
+    targetable[rownames(targetable) %in% gsub("_.*","",target_annotation_2[[name]]),1] <- "none"
+
+    annotdf_specific = data.frame(annotdf, targetable, check.names = FALSE)
+    annotcol_specific = list(`Tumor type` = color_for_subtypes_vector,
+                             `ALK mutation/fusion` = c("none"="white", "ALK mutation/fusion"="black"))
+  } 
+  if("BRAF" %in% genes_for_heatmap_list[[name]])
+  {
+    targetable = matrix("none", nrow=nrow(annotdf), ncol=1, dimnames = list(rownames(annotdf), "BRAF V600E"))
+    targetable[rownames(targetable) %in% gsub("_.*","",target_annotation_1[[name]]),1] <- "BRAF V600E"
+    targetable[rownames(targetable) %in% gsub("_.*","",target_annotation_2[[name]]),1] <- "none"
+
+    annotdf_specific = data.frame(annotdf, targetable, check.names = FALSE)
+    annotcol_specific = list(`Tumor type` = color_for_subtypes_vector,
+                             `BRAF V600E` = c("none"="white", "BRAF V600E"="black"))
+  } 
+  if("MDM2" %in% genes_for_heatmap_list[[name]])
+  {
+    # targetable = matrix("none", nrow=nrow(annotdf), ncol=5, dimnames = list(rownames(annotdf), c("TP53 mutant", "MDM2 amplified", 
+    #                                                                                              "MDM4 amplified", "TP53 gene effect",
+    #                                                                                              "EDA2R expression")))
+    # targetable[rownames(targetable) %in% gsub("_.*","",target_annotation_1[[name]]),1] <- "TP53 mutant"
+    # targetable[rownames(targetable) %in% gsub("_.*","",target_annotation_2[[name]]),1] <- "TP53 hotspot"
+    # targetable[rownames(targetable) %in% gsub("_.*","",target_annotation_3[[name]]),2] <- "MDM2 amplified"
+    # targetable[rownames(targetable) %in% gsub("_.*","",target_annotation_4[[name]]),3] <- "MDM4 amplified"
+    # targetable[, 4] <- gene_effect_peds[rownames(targetable), "TP53 (7157)"]
+    # targetable[, 5] <- gene_expression_peds[rownames(targetable), "EDA2R (60401)", drop=F] 
+
+    targetable = matrix("none", nrow=nrow(annotdf), ncol=2, dimnames = list(rownames(annotdf), c("TP53 mutant", 
+                                                                                                 "EDA2R expression")))
+    targetable[rownames(targetable) %in% gsub("_.*","",target_annotation_1[[name]]),1] <- "TP53 mutant"
+    targetable[rownames(targetable) %in% gsub("_.*","",target_annotation_2[[name]]),1] <- "TP53 hotspot"
+    targetable[, 2] <- gene_expression_peds[rownames(targetable), "EDA2R (60401)", drop=F]
+    
+    # gradient_cols <- colorRampPalette(rev(brewer.pal(n = 11, name = "RdYlBu" )))(100)
+    # gradient_cols <- gradient_cols[round((as.numeric(targetable[,4]) + 4) / 8 * 100)]
+    # names(gradient_cols) <- targetable[,4]
+    
+    # gradient_cols2 <- colorRampPalette(rev(brewer.pal(n = 11, name = "RdYlBu" )))(100)
+    # gradient_cols2 <- gradient_cols2[round(unique(as.numeric(targetable[,5])) / 6 * 100) + 1]
+    # names(gradient_cols2) <- unique(targetable[,5])
+    
+    gradient_cols2 <- colorRampPalette(rev(brewer.pal(n = 11, name = "RdYlBu" )))(100)
+    gradient_cols2 <- gradient_cols2[round(unique(as.numeric(targetable[,2])) / 6 * 100) + 1]
+    names(gradient_cols2) <- unique(targetable[,2])
+
+    annotdf_specific = data.frame(annotdf, targetable, check.names = FALSE)
+    annotcol_specific = list(`Tumor type` = color_for_subtypes_vector,
+                             `TP53 mutant` = c("none"="white", "TP53 mutant"="gray", "TP53 hotspot"="black"),
+                             # `MDM2 amplified` = c("none"="white", "MDM2 amplified"="red"),
+                             # `MDM4 amplified` = c("none"="white", "MDM4 amplified"="red"),
+                             # `TP53 gene effect` = gradient_cols,
+                             `EDA2R expression` = gradient_cols2)
+  } 
+  if("CDK4" %in% genes_for_heatmap_list[[name]])
+  {
+    # targetable = matrix("none", nrow=nrow(annotdf), ncol=3, dimnames = list(rownames(annotdf), c("RB1 mutant", "CDK4 amplified", "CDK6 amplified")))
+    # targetable[rownames(targetable) %in% gsub("_.*","",target_annotation_1[[name]]),1] <- "RB1 mutant"
+    # targetable[rownames(targetable) %in% gsub("_.*","",target_annotation_2[[name]]),2] <- "CDK4 amplified"
+    # targetable[rownames(targetable) %in% gsub("_.*","",target_annotation_3[[name]]),3] <- "CDK6 amplified"
+
+    targetable = matrix("none", nrow=nrow(annotdf), ncol=1, dimnames = list(rownames(annotdf), c("RB1 mutant")))
+    targetable[rownames(targetable) %in% gsub("_.*","",target_annotation_1[[name]]),1] <- "RB1 mutant"
+
+    annotdf_specific = data.frame(annotdf, targetable, check.names = FALSE)
+    annotcol_specific = list(`Tumor type` = color_for_subtypes_vector,
+                             `RB1 mutant` = c("none"="white", "RB1 mutant"="black") #,
+                             # `CDK4 amplified` = c("none"="white", "CDK4 amplified"="red"),
+                             # `CDK6 amplified` = c("none"="white", "CDK6 amplified"="red")
+                             )
+  } 
+  if("MCL1" %in% genes_for_heatmap_list[[name]])
+  {
+    # targetable = matrix(NA, nrow=nrow(annotdf), ncol=2, dimnames = list(rownames(annotdf), c("BCL2L1 expression", "BAK1 expression")))
+    # targetable[,1] <- gene_expression_peds[rownames(targetable), "BCL2L1 (598)", drop=F] 
+    # targetable[,2] <- gene_expression_peds[rownames(targetable), "BAK1 (578)", drop=F] 
+
+    # targetable = matrix(NA, nrow=nrow(annotdf), ncol=1, dimnames = list(rownames(annotdf), c("BCL2L1 expression")))
+    # targetable[,1] <- gene_expression_peds[rownames(targetable), "BCL2L1 (598)", drop=F] 
+    # 
+    # gradient_cols2 <- colorRampPalette(rev(brewer.pal(n = 11, name = "RdYlBu" )))(100)
+    # gradient_cols2 <- gradient_cols2[round(unique(as.numeric(targetable[,1])) / 10 * 100) + 1]
+    # names(gradient_cols2) <- unique(targetable[,1])
+
+   # annotdf_specific = data.frame(annotdf, targetable, check.names = FALSE)
+    annotdf_specific = data.frame(annotdf, check.names = FALSE)
+    annotcol_specific = list(`Tumor type` = color_for_subtypes_vector #,
+                            # `BCL2L1 expression` = gradient_cols2 #,
+                             # `BAK1 expression` = c("white", "white", "red")
+                             )
+  } 
+  genes_for_heatmap <- genes_for_heatmap_list[[name]]
+  
+  heatmap_data <- gene_dependency_peds[,gsub(" .*","",colnames(gene_dependency_peds)) %in% genes_for_heatmap,drop=F]
+  heatmap_data <- na.exclude(heatmap_data[order(heatmap_data[,1]),,drop=F])
+  colnames(heatmap_data) <- paste0(gsub(" .*", "", colnames(heatmap_data)), " dependency")
+  
+  heatmap_data2 <- gene_dependency_peds[,gsub(" .*","",colnames(gene_dependency_peds)) %in% genes_for_heatmap,drop=F]
+  heatmap_data2 <- ((na.exclude(heatmap_data2[order(heatmap_data2[,1]),,drop=F]) > 0.5) +
+    (na.exclude(heatmap_data2[order(heatmap_data2[,1]),,drop=F]) > 0.75)) / 2
+  # heatmap_data2 <- (na.exclude(heatmap_data2[order(heatmap_data2[,1]),,drop=F]) > 0.75)
+  colnames(heatmap_data2) <- paste0(gsub(" .*", "", colnames(heatmap_data2)), " dependent")
+  
+  # p1 <- pheatmap(heatmap_data,
+  #                breaks = seq(0,1,by=0.01),
+  #                scale = "none",
+  #                cellheight = 8,
+  #                cellwidth = 16,
+  #                treeheight_row = 10,
+  #                treeheight_col = 10,
+  #                show_rownames = T,
+  #                show_colnames = T,
+  #                cluster_rows = length(genes_for_heatmap) >1,
+  #                cluster_cols = length(genes_for_heatmap) >1,
+  #                border_color = "black",
+  #                annotation_row = annotdf_specific,
+  #                annotation_colors = annotcol_specific,
+  #                annotation_names_row = F)
+  
+  p2 <- pheatmap(t(cbind(heatmap_data, heatmap_data2)), 
+                 breaks = seq(0,1,by=0.01), 
+                 scale = "none",
+                 cellheight = 16,
+                 cellwidth = 8,
+                 treeheight_row = 0,
+                 treeheight_col = 10,
+                 show_rownames = T,
+                 show_colnames = T,
+                 cluster_rows = length(genes_for_heatmap) >1,
+                 cluster_cols = length(genes_for_heatmap) >1,
+                 border_color = "black",
+                 annotation_col = annotdf_specific,
+                 annotation_colors = annotcol_specific,
+                 annotation_names_col = T,
+                 legend = F,
+                 annotation_legend = F)
+  
+    p2 <- pheatmap(t(heatmap_data), 
+                 breaks = seq(0,1,by=0.01), 
+                 scale = "none",
+                 cellheight = 16,
+                 cellwidth = 8,
+                 treeheight_row = 0,
+                 treeheight_col = 10,
+                 show_rownames = T,
+                 show_colnames = T,
+                 cluster_rows = length(genes_for_heatmap) >1,
+                 cluster_cols = length(genes_for_heatmap) >1,
+                 border_color = "black",
+                 annotation_col = annotdf_specific,
+                 annotation_colors = annotcol_specific,
+                 annotation_names_col = T,
+                 legend = F,
+                 annotation_legend = F)
+    
+  print(p2)
+  saveRDS(p2, file = paste0('figures/targets/dep_heatmap_horz_', paste0(genes_for_heatmap,collapse="_") ,'_', version_to_use,'.rds'))
+  ggsave(p2, filename = paste0('figures/targets/dep_heatmap_horz_', paste0(genes_for_heatmap,collapse="_") ,'_', version_to_use,'.pdf'), device = 'pdf', width = 30, height=12, units = 'cm')
+}
+
+annotcol_specific$`Tumor type` <- annotcol_specific$`Tumor type`[names(annotcol_specific$`Tumor type`) %in% annotdf_specific$`Tumor type`]
+
+legend1 <- pheatmap(t(heatmap_data[1,1,drop=F]), 
+                 breaks = seq(0,1,by=0.01), 
+                 scale = "none",
+                 cellheight = 150,
+                 cellwidth = 0,
+                 show_rownames = F,
+                 show_colnames = F,
+                 cluster_rows = F,
+                 cluster_cols = F,
+                 border_color = "black",
+                 annotation_col = annotdf_specific,
+                 annotation_colors = annotcol_specific,
+                 annotation_names_col = F,
+                 legend = T,
+                 annotation_legend = F)
+legend2 <- pheatmap(t(heatmap_data[1,1,drop=F]), 
+                 breaks = seq(0,1,by=0.01), 
+                 scale = "none",
+                 cellheight = 150,
+                 cellwidth = 0,
+                 show_rownames = F,
+                 show_colnames = F,
+                 cluster_rows = F,
+                 cluster_cols = F,
+                 border_color = "black",
+                 annotation_col = annotdf_specific,
+                 annotation_colors = annotcol_specific,
+                 annotation_names_col = F,
+                 legend = F,
+                 annotation_legend = T)
+
+legend1
+legend2
+saveRDS(legend1, file = paste0('figures/targets/dep_heatmap_horz_legend1_',version_to_use,'.rds'))
+ggsave(legend1, filename = paste0('figures/targets/dep_heatmap_horz_legend1_',version_to_use,'.pdf'), device = 'pdf', 
+       width = 30, height=12, units = 'cm')
+saveRDS(legend2, file = paste0('figures/targets/dep_heatmap_horz_legend2_',version_to_use,'.rds'))
+ggsave(legend2, filename = paste0('figures/targets/dep_heatmap_horz_legend2_',version_to_use,'.pdf'), device = 'pdf', 
+       width = 30, height=12, units = 'cm')
+
+```
+
+
+
+
+## Session Info
+
+```{r session_info, include=TRUE, echo=TRUE, results='markup'}
+devtools::session_info()
+```
+
+```{r include=TRUE}
+as.data.frame(`Dataset Used`) %>% datatable(options=list(scrollX=T))
+```

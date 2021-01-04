@@ -1,0 +1,419 @@
+---
+title: "Dependency Rates Figures"
+author: "Neekesh Dharia & Guillaume Kugener"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include=FALSE, message=FALSE, warning = FALSE)
+source('setup.R')
+source('load_data.R')
+```
+
+
+# Generated using: `r toupper(version_to_use)`
+
+
+```{r load_needed_datasets}
+# This script uses the following datasets:
+mf <- mf
+gene_dependency <- load_gene_dependency()
+gene_effect <- load_gene_effect()
+gene_lrt_table <- load_lrt_table()
+achilles_common_essentials <- load_achilles_common_essentials()
+
+if(!dir.exists('figures')) { dir.create('figures') }
+if(!dir.exists('figures/dependency')) { dir.create('figures/dependency') }
+```
+
+
+The table below highlights all of the cell lines that are included in the analyses and the types that they are annotated as:
+
+```{r}
+cell_lines_included_table <- rbind(
+  data.frame(name=row.names(gene_dependency), stringsAsFactors = F) %>% mutate(Source='Dependency')
+) %>% 
+  mutate(value=1) %>% mutate(DepMap_ID=name) %>%
+  spread(., Source, value) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, CCLE_name, Type), by='DepMap_ID') %>%
+  dplyr::select(DepMap_ID, CCLE_name, everything())
+```
+
+```{r include=TRUE} 
+cell_lines_included_table %>% datatable(options=list(scrollX=T))
+```
+
+
+# Overview
+
+* Compare number of dependencies per cell line by tumor type
+
+
+## Dependency Rates
+
+```{r include=TRUE}
+current_gene_map <- colnames(gene_dependency) %>% setNames(., gsub('.* ', '', .))
+
+lrt_genes <- gene_lrt_table %>% filter((lrt) > 100, skewed_left) %$%
+  gene
+
+achilles_non_essentials <- colSums(gene_dependency >= 0.5, na.rm = T)
+achilles_non_essentials <- names(achilles_non_essentials[achilles_non_essentials == 0])
+
+lrt_genes_ceres <- lrt_genes
+lrt_genes_ceres <- lrt_genes_ceres[!(lrt_genes_ceres %in% c(achilles_non_essentials, achilles_common_essentials$gene))]
+```
+
+```{r}
+# Dependencies (prob > 0.5) by type
+total_deps_by_cl_lrt_only <- apply(gene_dependency[,lrt_genes_ceres], 1, FUN = function(x) length(x[x > 0.5]))
+total_deps_by_cl <- apply(gene_dependency[,], 1, FUN = function(x) length(x[x > 0.5]))
+
+counts_prob_dep_df <- data.frame(total_deps_by_cl) %>%
+  mutate(DepMap_ID=row.names(.)) %>%
+  mutate(total_deps_by_cl_lrt_only=total_deps_by_cl_lrt_only[DepMap_ID]) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type, PvA), by='DepMap_ID') %>%
+  mutate(Group=ifelse(PvA=='Adult', PvA, Type))
+
+counts_prob_dep_df_order <- counts_prob_dep_df %>%
+  group_by(Type) %>%
+  dplyr::summarise(med=median(total_deps_by_cl)) %>%
+  arrange(med) %$% Type
+
+counts_prob_dep_df_order_lrt_only <- counts_prob_dep_df %>%
+  group_by(Type) %>%
+  dplyr::summarise(med=median(total_deps_by_cl_lrt_only)) %>%
+  arrange(med) %$% Type
+
+counts_prob_dep_df %<>% mutate(Type1=factor(Type, levels=counts_prob_dep_df_order), Type2=factor(Type, levels=counts_prob_dep_df_order_lrt_only))
+```
+
+Number of selective dependencies (LRT>100, exclude common essentials, exclude non-essentials) in each tumor type (prob > 0.5).
+
+### {.tabset .tabset-fade}
+
+#### Selective dependencies
+
+```{r include=TRUE}
+# Could be correlated to quality
+counts_prob_dep_df %<>%
+  group_by(Type) %>%
+  dplyr::mutate(rank=rank(total_deps_by_cl_lrt_only)/max(n(),2)) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(Type,' (n=',n,')')) %>%
+  ungroup()
+
+counts_prob_dep_df$PvA <- factor(counts_prob_dep_df$PvA, levels = c("Pediatric", "Adult", "Fibroblast"))
+counts_prob_dep_df %<>% group_by(PvA) %>%
+  mutate(n = n()) %>% 
+  mutate(label2 = paste0(PvA,' (n=',n,')')) %>%
+  ungroup()
+
+# Order by median
+order_lineages <- counts_prob_dep_df %>%
+  group_by(Type) %>%
+  dplyr::summarise(med=median(total_deps_by_cl_lrt_only, na.rm = T)) %$%
+  setNames(med, Type) %>% .[order(.)] %>% names()
+
+counts_prob_dep_df %<>% mutate(Type=factor(Type, levels=order_lineages)) %>%
+  mutate(plot_rank=rank + as.integer(Type)) %>% 
+  group_by(Type) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(Type,' (n=',n,')')) %>%
+  ungroup()
+
+# Get coordindates for tick marks
+cl_order <- counts_prob_dep_df %$% setNames(plot_rank, DepMap_ID) %>% .[order(.)]
+
+labels_coords <- data.frame(DepMap_ID=names(cl_order), val=cl_order) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type) %>% distinct(), by='DepMap_ID') %>%
+  left_join(., counts_prob_dep_df %>% dplyr::select(DepMap_ID, label) %>% distinct(), by='DepMap_ID') %>%
+  group_by(label) %>%
+  dplyr::summarise(v=ifelse(max(val)==min(val), val, (max(val)+floor(min(val)))/2)) %$%
+  setNames(v, label)
+
+counts_prob_dep_df_plot <- counts_prob_dep_df %>%
+  mutate(CL_for_plot=factor(DepMap_ID, levels=names(cl_order)))
+
+# Add the median line segment
+med_segs <- counts_prob_dep_df %>%
+  group_by(Type) %>%
+  dplyr::summarise(
+    x = floor(min(plot_rank))+0.25, xend=ceiling(max(plot_rank))-0.25,
+    y = median(total_deps_by_cl_lrt_only, na.rm = T)
+  ) %>%
+  mutate(x=ifelse(x > xend, x - 1, x)) %>%
+  arrange(x)
+
+number_lrt_median_arranged <- ggplot(counts_prob_dep_df_plot, aes(plot_rank, total_deps_by_cl_lrt_only, color=Group)) +
+  geom_point(aes(fill=Group), pch=21, alpha=0.75, size=3) +
+  geom_segment(data=med_segs, aes(x=x, xend=xend, y=y, yend=y, group=Type), color='black', size=0.5) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  theme_bw() +
+  xlab('') + ylab('Number of selective\ngene dependencies') +
+  scale_x_continuous(breaks=labels_coords, labels=names(labels_coords)) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none', 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+number_lrt_median_arranged
+
+saveRDS(number_lrt_median_arranged, file = paste0('figures/dependency/total_lrt_dependencies_median_arranged_', version_to_use, '.rds'))
+ggsave(number_lrt_median_arranged, filename = paste0('figures/dependency/total_lrt_dependencies_median_arranged_', version_to_use, '.pdf'), 
+       height=14, width = 20, units='cm', useDingbats=FALSE)
+```
+
+Number of selective dependencies with tumor types ordered by number of cell lines.
+
+```{r include=TRUE}
+ordered_contexts <- counts_prob_dep_df %>%
+  group_by(Type) %>% mutate(Num_lines_in_context=n()) %>%
+  distinct(Type, Num_lines_in_context) %>%
+  arrange(Num_lines_in_context) %$% Type
+
+counts_prob_dep_df %<>% mutate(Type=factor(Type, levels=ordered_contexts)) %>%
+  mutate(plot_rank=rank + as.integer(Type)) %>% 
+  group_by(Type) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(Type,' (n=',n,')')) %>%
+  ungroup()
+
+# Get coordindates for tick marks
+cl_order <- counts_prob_dep_df %$% setNames(plot_rank, DepMap_ID) %>% .[order(.)]
+
+labels_coords <- data.frame(DepMap_ID=names(cl_order), val=cl_order) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type) %>% distinct(), by='DepMap_ID') %>%
+  left_join(., counts_prob_dep_df %>% dplyr::select(DepMap_ID, label) %>% distinct(), by='DepMap_ID') %>%
+  group_by(label) %>%
+  dplyr::summarise(v=ifelse(max(val)==min(val), val, (max(val)+floor(min(val)))/2)) %$%
+  setNames(v, label)
+
+counts_prob_dep_df_plot <- counts_prob_dep_df %>%
+  mutate(CL_for_plot=factor(DepMap_ID, levels=names(cl_order)))
+
+# Add the median line segment
+med_segs <- counts_prob_dep_df %>%
+  group_by(Type) %>%
+  dplyr::summarise(
+    x = floor(min(plot_rank))+0.25, xend=ceiling(max(plot_rank))-0.25,
+    y = median(total_deps_by_cl_lrt_only, na.rm = T)
+  ) %>%
+  mutate(x=ifelse(x > xend, x - 1, x)) %>%
+  arrange(x)
+
+
+number_lrt_lineage_size <- ggplot(counts_prob_dep_df_plot, aes(plot_rank, total_deps_by_cl_lrt_only, color=Group)) +
+  geom_point(aes(fill=Group), pch=21, alpha=0.75, size=3) +
+  geom_segment(data=med_segs, aes(x=x, xend=xend, y=y, yend=y, group=Type), color='black', size=0.5) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  theme_bw() +
+  xlab('') + ylab('Number of selective\ngene dependencies') +
+  scale_x_continuous(breaks=labels_coords, labels=names(labels_coords)) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none', 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+number_lrt_lineage_size
+
+saveRDS(number_lrt_lineage_size, file = paste0('figures/dependency/total_lrt_dependencies_lineage_size_arranged_', version_to_use, '.rds'))
+ggsave(number_lrt_lineage_size, filename = paste0('figures/dependency/total_lrt_dependencies_lineage_size_arranged_', version_to_use, '.pdf'), 
+       height=14, width = 20,  units='cm', useDingbats=FALSE)
+```
+
+Comparison of number of dependencies in pediatric versus adult cell lines.
+
+```{r include=T}
+total_lrt_comparison <- ggplot(counts_prob_dep_df %>% dplyr::filter(PvA != "Fibroblast"), 
+                               aes(x = PvA, y = total_deps_by_cl_lrt_only, fill=PvA, color=PvA)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  scale_fill_manual(values=c('Pediatric'='red', 'Adult'='grey')) +
+  scale_color_manual(values=c('Pediatric'='red', 'Adult'='grey')) +
+  theme_bw() +
+  xlab('') + ylab('Number of selective dependencies') +
+  scale_x_discrete(labels=setNames(unique(counts_prob_dep_df$label2), unique(counts_prob_dep_df$PvA))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means()
+
+total_lrt_comparison
+
+saveRDS(total_lrt_comparison, file = paste0('figures/dependency/peds_v_other_LRTdeps_all_', version_to_use, '.rds'))
+ggsave(total_lrt_comparison, filename = paste0('figures/dependency/peds_v_other_LRTdeps_all_', version_to_use, '.pdf'), 
+       height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+#### All genes
+
+```{r include=TRUE}
+counts_prob_dep_df %<>%
+  group_by(Type) %>%
+  dplyr::mutate(rank=rank(total_deps_by_cl)/max(n(),2)) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(Type,' (n=',n,')')) %>%
+  ungroup()
+
+counts_prob_dep_df$PvA <- factor(counts_prob_dep_df$PvA, levels = c("Pediatric", "Adult", "Fibroblast"))
+counts_prob_dep_df %<>% group_by(PvA) %>%
+  mutate(n = n()) %>% 
+  mutate(label2 = paste0(PvA,' (n=',n,')')) %>%
+  ungroup()
+
+# Order by median
+order_lineages <- counts_prob_dep_df %>%
+  group_by(Type) %>%
+  dplyr::summarise(med=median(total_deps_by_cl, na.rm = T)) %$%
+  setNames(med, Type) %>% .[order(.)] %>% names()
+
+counts_prob_dep_df %<>% mutate(Type=factor(Type, levels=order_lineages)) %>%
+  mutate(plot_rank=rank + as.integer(Type)) %>% 
+  group_by(Type) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(Type,' (n=',n,')')) %>%
+  ungroup()
+
+# Get coordindates for tick marks
+cl_order <- counts_prob_dep_df %$% setNames(plot_rank, DepMap_ID) %>% .[order(.)]
+
+labels_coords <- data.frame(DepMap_ID=names(cl_order), val=cl_order) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type) %>% distinct(), by='DepMap_ID') %>%
+  left_join(., counts_prob_dep_df %>% dplyr::select(DepMap_ID, label) %>% distinct(), by='DepMap_ID') %>%
+  group_by(label) %>%
+  dplyr::summarise(v=ifelse(max(val)==min(val), val, (max(val)+floor(min(val)))/2)) %$%
+  setNames(v, label)
+
+counts_prob_dep_df_plot <- counts_prob_dep_df %>%
+  mutate(CL_for_plot=factor(DepMap_ID, levels=names(cl_order)))
+
+# Add the median line segment
+med_segs <- counts_prob_dep_df %>%
+  group_by(Type) %>%
+  dplyr::summarise(
+    x = floor(min(plot_rank))+0.25, xend=ceiling(max(plot_rank))-0.25,
+    y = median(total_deps_by_cl, na.rm = T)
+  ) %>%
+  mutate(x=ifelse(x > xend, x - 1, x)) %>%
+  arrange(x)
+
+number_dep_median_arranged <- ggplot(counts_prob_dep_df_plot, aes(plot_rank, total_deps_by_cl, color=Group)) +
+  geom_point(aes(fill=Group), pch=21, alpha=0.75, size=3) +
+  geom_segment(data=med_segs, aes(x=x, xend=xend, y=y, yend=y, group=Type), color='black', size=0.5) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  theme_bw() +
+  xlab('') + ylab('Number of gene dependencies') +
+  scale_x_continuous(breaks=labels_coords, labels=names(labels_coords)) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none', 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+number_dep_median_arranged
+
+saveRDS(number_dep_median_arranged, file = paste0('figures/dependency/total_dependencies_median_arranged_', version_to_use, '.rds'))
+ggsave(number_dep_median_arranged, filename = paste0('figures/dependency/total_dependencies_median_arranged_', version_to_use, '.pdf'), 
+       height=14, width = 20, units='cm', useDingbats=FALSE)
+```
+
+Number of total dependencies with tumor types ordered by number of cell lines.
+
+```{r include=TRUE}
+ordered_contexts <- counts_prob_dep_df %>%
+  group_by(Type) %>% mutate(Num_lines_in_context=n()) %>%
+  distinct(Type, Num_lines_in_context) %>%
+  arrange(Num_lines_in_context) %$% Type
+
+counts_prob_dep_df %<>% mutate(Type=factor(Type, levels=ordered_contexts)) %>%
+  mutate(plot_rank=rank + as.integer(Type)) %>% 
+  group_by(Type) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(Type,' (n=',n,')')) %>%
+  ungroup()
+
+# Get coordindates for tick marks
+cl_order <- counts_prob_dep_df %$% setNames(plot_rank, DepMap_ID) %>% .[order(.)]
+
+labels_coords <- data.frame(DepMap_ID=names(cl_order), val=cl_order) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type) %>% distinct(), by='DepMap_ID') %>%
+  left_join(., counts_prob_dep_df %>% dplyr::select(DepMap_ID, label) %>% distinct(), by='DepMap_ID') %>%
+  group_by(label) %>%
+  dplyr::summarise(v=ifelse(max(val)==min(val), val, (max(val)+floor(min(val)))/2)) %$%
+  setNames(v, label)
+
+counts_prob_dep_df_plot <- counts_prob_dep_df %>%
+  mutate(CL_for_plot=factor(DepMap_ID, levels=names(cl_order)))
+
+# Add the median line segment
+med_segs <- counts_prob_dep_df %>%
+  group_by(Type) %>%
+  dplyr::summarise(
+    x = floor(min(plot_rank))+0.25, xend=ceiling(max(plot_rank))-0.25,
+    y = median(total_deps_by_cl, na.rm = T)
+  ) %>%
+  mutate(x=ifelse(x > xend, x - 1, x)) %>%
+  arrange(x)
+
+number_dep_lineage_size <- ggplot(counts_prob_dep_df_plot, aes(plot_rank, total_deps_by_cl, color=Group)) +
+  geom_point(aes(fill=Group), pch=21, alpha=0.75, size=3) +
+  geom_segment(data=med_segs, aes(x=x, xend=xend, y=y, yend=y, group=Type), color='black', size=0.5) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  theme_bw() +
+  xlab('Context (ordered by number of lines in context)') + ylab('Number of gene dependencies') +
+  scale_x_continuous(breaks=labels_coords, labels=names(labels_coords)) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none', 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+number_dep_lineage_size
+
+saveRDS(number_dep_lineage_size, file = paste0('figures/dependency/total_dependencies_lineage_size_arranged_', version_to_use, '.rds'))
+ggsave(number_dep_lineage_size, filename = paste0('figures/dependency/total_dependencies_lineage_size_arranged_', version_to_use, '.pdf'), 
+       height=14, width = 20,  units='cm', useDingbats=FALSE)
+```
+
+
+Comparison of number of dependencies in pediatric versus adult cell lines.
+
+```{r include=T}
+total_dep_comparison <- ggplot(counts_prob_dep_df %>% dplyr::filter(PvA != "Fibroblast"), 
+                               aes(x = PvA, y = total_deps_by_cl, fill=PvA, color=PvA)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  scale_fill_manual(values=c('Pediatric'='red', 'Adult'='grey')) +
+  scale_color_manual(values=c('Pediatric'='red', 'Adult'='grey')) +
+  theme_bw() +
+  xlab('') + ylab('Number of dependencies') +
+  scale_x_discrete(labels=setNames(unique(counts_prob_dep_df$label2), unique(counts_prob_dep_df$PvA))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means()
+
+total_dep_comparison
+
+saveRDS(total_dep_comparison, file = paste0('figures/dependency/peds_v_other_deps_all_', version_to_use, '.rds'))
+ggsave(total_dep_comparison, filename = paste0('figures/dependency/peds_v_other_deps_all_', version_to_use, '.pdf'), 
+       height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+
+
+## Session Info
+
+```{r session_info, include=TRUE, echo=TRUE, results='markup'}
+devtools::session_info()
+```
+
+```{r include=TRUE}
+as.data.frame(`Dataset Used`) %>% datatable(options=list(scrollX=T))
+```

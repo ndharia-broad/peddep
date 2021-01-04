@@ -1,0 +1,1177 @@
+---
+title: "Pediatric Cell Line Features Figures"
+author: "Neekesh Dharia & Guillaume Kugener"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include=FALSE, message=FALSE, warning = FALSE)
+source('setup.R')
+source('load_data.R')
+```
+
+
+# Generated using: `r toupper(version_to_use)`
+
+
+```{r load_needed_datasets}
+# This script uses the following datasets:
+mf <- mf
+gene_dependency <- load_gene_dependency()
+gene_expression <- load_gene_expression()
+mutations <- load_mutations()
+fusions <- load_fusions()
+segment_cn <- load_segment_cn()
+gene_cn <- as.data.frame(load_gene_cn())
+
+colnames(gene_cn) %<>% gsub(' .*', '', .)
+
+if(!dir.exists('figures')) { dir.create('figures') }
+if(!dir.exists('figures/cell_line_features')) { dir.create('figures/cell_line_features') }
+```
+
+The table below highlights all of the cell lines that are included in the analyses and the types that they are annotated as:
+
+```{r}
+cell_lines_included_table <- rbind(
+  data.frame(name=row.names(gene_dependency), stringsAsFactors = F) %>% mutate(Source='Dependency'),
+  data.frame(name=row.names(gene_expression), stringsAsFactors = F) %>% mutate(Source='Expression'),
+  data.frame(name=unique(mutations$Tumor_Sample_Barcode), stringsAsFactors = F) %>% mutate(Source='Mutation'),
+  data.frame(name=(row.names(gene_cn)), stringsAsFactors = F) %>% mutate(Source='CN'),
+  data.frame(name=unique(fusions$DepMap_ID), stringsAsFactors = F) %>% mutate(Source='Fusions')) %>% mutate(value=1) %>% mutate(DepMap_ID=(name)) %>%
+  spread(., Source, value) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, CCLE_name, Type), by='DepMap_ID') %>%
+  dplyr::select(DepMap_ID, CCLE_name, everything())
+```
+
+```{r include=TRUE} 
+cell_lines_included_table %>% datatable(options=list(scrollX=T))
+```
+
+# Overview
+
+* For each pediatric tumor type we are interested in, we create a figure that gives the landscape of that tumor type 
+
+
+```{r}
+# Add the arm level and and chromosome level calculations
+chr_cutoffs <- read_tsv('input_files/hg38_cytoband.txt', col_names = F, col_types = list(col_character(),
+                                                                                         col_double(), 
+                                                                                         col_double(), 
+                                                                                         col_character(),
+                                                                                         col_character())) %>%
+  set_colnames(c('Chromosome', 'bp_start', 'bp_stop', 'arm', 'stain')) %>%
+  mutate(bp_start=bp_start+1) %>%
+  mutate(arm=ifelse(grepl('p', arm), 'p', ifelse(grepl('q', arm), 'q', NA))) %>%
+  mutate(Chromosome=gsub('chr', '', Chromosome)) %>%
+  filter(!is.na(arm)) %>%
+  dplyr::select(Chromosome, arm, bp_start, bp_stop) %>%
+  filter(arm=='p') %>%
+  group_by(Chromosome) %>%
+  dplyr::summarise(max=max(bp_stop)) %$%
+  setNames(max, paste0('chr', Chromosome))
+
+# Arms
+all_arms <- c(
+  paste0('chr', c(seq(1,22), 'X', 'Y'), 'p'),
+  paste0('chr', c(seq(1,22), 'X', 'Y'), 'q'),
+  paste0('chr', c(seq(1,22), 'X', 'Y'))
+)
+
+# This is for arm level copy number calculations
+calc_cn_given_range <- function(name='chr1', chr=1) {
+  valid_segs <- NULL
+  
+  if (grepl('p$', name)) {
+    end = chr_cutoffs[paste0('chr', chr)]
+    
+    # Filter segments of interest
+    valid_segs <- segment_cn %>%
+      filter(Chromosome==chr, Start < end) %>%
+      mutate(capped_end=ifelse(End > end, end, End)) %>%
+      group_by(DepMap_ID) %>%
+      dplyr::summarise(
+        segment_spanned=sum(capped_end-Start),
+        weight_sum = sum(Segment_Mean*(capped_end-Start))
+      ) %>% mutate(call=log2(weight_sum/segment_spanned)) %$%
+      setNames(call, DepMap_ID)
+  } else if (grepl('q$', name)) {
+    start = chr_cutoffs[paste0('chr', chr)]
+    
+    valid_segs <- segment_cn %>%
+      filter(Chromosome==chr, End > start) %>%
+      mutate(capped_start=ifelse(Start < start, start, Start)) %>%
+      group_by(DepMap_ID) %>%
+      dplyr::summarise(
+        segment_spanned=sum(End-capped_start),
+        weight_sum = sum(Segment_Mean*(End-capped_start))
+      ) %>% mutate(call=log2(weight_sum/segment_spanned)) %$%
+      setNames(call, DepMap_ID)
+  } else {
+    valid_segs <- segment_cn %>%
+      filter(Chromosome==chr) %>%
+      group_by(DepMap_ID) %>%
+      dplyr::summarise(
+        segment_spanned=sum(End-Start),
+        weight_sum = sum(Segment_Mean*(End-Start))
+      ) %>% mutate(call=log2(weight_sum/segment_spanned)) %$%
+      setNames(call, DepMap_ID)
+  }
+}
+
+for (a in all_arms) {
+  valid_segs <- calc_cn_given_range(name=a, chr=gsub('chr|p|q', '', a))
+  gene_cn[row.names(gene_cn),a] <- valid_segs[row.names(gene_cn)]
+}
+
+```
+
+
+```{r}
+# For each context, we need to determine the things we want to show:
+# Which Data sets we have it in (this will be true of all contexts)
+# particular CN events we want to highlight (this will be context specific)
+# particular mutations we would like to highlight
+
+# Tile colors
+# Sequenced as indicated
+# Somatic mutation
+# Copy number loss
+# Copy number gain
+# Chromosome level gains/loss -> will need a function for this. (TODO)
+```
+
+```{r}
+specific_values_needed <- list( #PMID: 25186949
+  "Ewing"=list(
+    types=c("Ewing"),
+    # The name is what will be displayed, the value is the genes we look for
+    fusions=c('EWS-FLI'='EWSR1-FLI1', 'EWS-ERG'='EWS-ERG', 'EWS-FEV'='EWS-FEV'),
+    cn=c('CDKN2A', 'TP53', 'chr1q', 'chr8'),
+    mutations=c('STAG2', 'TP53')
+  ),
+  "Hepatoblastoma"=list( #PMID: 25135868
+    types=c('Hepatoblastoma'),
+    cn=c('chr4q', 'chr8q', 'chr20'),
+    mutations=c('CTBNN1')
+  ),
+  "Retinoblastoma"=list( #PMID: 24433356
+    types=c('Retinoblastoma'),
+    cn=c('RB1', 'MYCN', 'chr6p', 'chr16q'),
+    mutations=c('RB1', 'BCOR', 'CREBBP')
+  ),
+  "Rhabdomyosarcoma"=list( #PMID: 24436047
+    types=c('Rhabdomyosarcoma'),
+    # The name is what will be displayed, the value is the genes we look for
+    fusions=c('PAX3-FOXO1'='PAX3-FOXO1', 'PAX7-FOXO1'='PAX7-FOXO1'),
+    cn=c('NRAS', 'KRAS', 'HRAS', 'TP53', 'MYCN','chr2', 'chr8', 'chr13'),
+    mutations=c('NRAS', 'KRAS', 'HRAS', 'TP53', 'MYCN')
+  ),
+  "Rhabdoid"=list( #PMID: 26977886 26923874
+    types=c('Rhabdoid'),
+    cn=c('SMARCB1', 'SMARCA4', 'CABIN1'),
+    mutations=c('SMARCB1', 'SMARCA4', 'CABIN1')
+  ),
+  "Medulloblastoma"=list( #PMID: 28726821
+    types=c('Medulloblastoma'),
+    cn=c('TP53', 'CTNNB1', 'PTCH1', 'MYCN', 'MYC', 'CDK6'),
+    mutations=c('TP53', 'CTNNB1', 'PTCH1', 'MYCN', 'MYC', 'CDK6')
+  ),
+  "Neuroblastoma"=list( #PMID: 23334666
+    types=c('Neuroblastoma'),
+    cn=c('TP53', 'ALK', 'ATRX', 'PTPN11', 'NRAS', 'chr1q', 'chr2p','chr17q', 'chr1p', 'chr3p', 'chr11q'),
+    mutations=c('TP53', 'ALK', 'ATRX', 'PTPN11', 'NRAS')
+  ),
+  "Osteosarcoma"=list( #PMID: 26632267
+    types=c('Osteosarcoma'),
+    cn=c('TP53', 'MDM2'),
+    mutations=c('TP53', 'MDM2', 'RB1', 'CDK4', 'RBL2')
+  ),
+  "Synovial Sarcoma"=list(
+    types=c('Synovial Sarcoma'),
+    fusions=c('SS18-SSX1'='SS18-SSX1', 'SS18-SSX2'='SS18-SSX2')
+  ),
+  "Pediatric Glioma"=list( #PMID: 28357536
+    types=c('Pediatric Glioma'),
+    cn=c('EGFR', 'PDGFRA'),
+    mutations=c('ACVR1', 'ATRX', 'BRAF', 'CDKN2A', 'DAXX', 'H3.3A', 'H3.3B', 'IDH1', 'PTEN', 'RB1', 'SETD2', 'TP53', 'TERT')
+  ),
+  "Pediatric CNS PNET"=list(
+    types=c('Pediatric CNS PNET')
+  ),
+  "Pediatric Germ Cell"=list( #PMID: 30896089
+    types=c('Pediatric Germ Cell'),
+    cn=c('KDR', 'MET'),
+    mutations=c('CBL', 'GNAQ', 'KIT', 'KRAS', 'NRAS', 'BRAF', 'APC', 'FAT1')
+  ),
+  "Wilms"=list(
+    types=c('Wilms'),
+    cn=c('LIN28B'),
+    mutations=c('DROSHA', 'DGCR8', 'XPO5', 'DICER', 'SIX1', 'SIX2', 'MLLT1', 'TP53')
+  ),
+  "Pediatric Sarcoma"=list(
+    types=c("Pediatric Sarcoma")
+  ),
+  "Renal Medullary Carcinoma"=list(
+    types=c("Renal Medullary Carcinoma")
+  )
+)
+
+# Create an all lines type that combines everything
+all_types_list <- list(types=c(), fusions=c(), cn=c(), mutations=c())
+for (s in names(specific_values_needed)) {
+  all_types_list[['types']] <- unique(c(all_types_list[['types']], s))
+  all_types_list[['fusions']] <- c(all_types_list[['fusions']], specific_values_needed[[s]]$fusions)
+  all_types_list[['cn']] <- unique(c(all_types_list[['cn']], specific_values_needed[[s]]$cn))
+  all_types_list[['mutations']] <- unique(c(all_types_list[['mutations']], specific_values_needed[[s]]$mutations))
+}
+
+specific_values_needed[['Pediatric']] <- all_types_list
+specific_values_needed[['Pediatric (CRISPR only)']] <- all_types_list
+```
+
+```{r include=TRUE, fig.height=10}
+output_plots <- list()
+for (specific_context in c('Pediatric', 'Pediatric (CRISPR only)')) {
+  all_cell_lines_in_mf <- mf %>% filter(Type %in% specific_values_needed[[specific_context]]$types, CCLE_name != "") %$% DepMap_ID
+  
+  if (specific_context == 'Pediatric (CRISPR only)') {
+    all_cell_lines_in_mf %<>% intersect(., rownames(gene_dependency))
+  }
+  
+  complete_profile <- data.frame(DepMap_ID=all_cell_lines_in_mf, stringsAsFactors = F)
+  
+  if (specific_context != 'Pediatric (CRISPR only)') {
+    # Now create the sequenced as indicated columns
+    in_avana <- all_cell_lines_in_mf %>% 
+      setNames(. %in% rownames(gene_dependency), .) %>%
+      lapply(., FUN = function(x) { ifelse(x, 'Sequenced as indicated', NA)}) %>%
+      unlist()
+    has_cn <- all_cell_lines_in_mf %>% 
+      setNames(. %in% (segment_cn %$% DepMap_ID), .)  %>%
+      lapply(., FUN = function(x) { ifelse(x, 'Sequenced as indicated', NA)}) %>%
+      unlist()
+    has_rnaseq <- all_cell_lines_in_mf %>% 
+      setNames(. %in% (row.names(gene_expression)), .) %>%
+      lapply(., FUN = function(x) { ifelse(x, 'Sequenced as indicated', NA)}) %>%
+      unlist()
+    
+    complete_profile %<>% mutate(
+      CRISPR=in_avana[DepMap_ID],
+      CN=has_cn[DepMap_ID],
+      RNAseq=has_rnaseq[DepMap_ID]
+    )
+  }
+  
+  # Add the fusions
+  for (f in names(specific_values_needed[[specific_context]][['fusions']])) {
+    g_l <- stringr::str_extract(specific_values_needed[[specific_context]][['fusions']][[f]], pattern = '^[A-Z0-9]+')
+    g_r <- stringr::str_extract(specific_values_needed[[specific_context]][['fusions']][[f]], pattern = '[A-Z0-9]+$')
+    
+    # Theoretically there are lines that could have no fusions...
+    cell_lines_in_fusion_ds <- intersect(all_cell_lines_in_mf, fusions$DepMap_ID)
+    
+    cell_lines_with_fusion <- fusions %>%
+      filter(DepMap_ID %in% all_cell_lines_in_mf) %>%
+      filter(grepl(paste0(g_l), `#FusionName`) & grepl(paste0(g_r), `#FusionName`)) %$%
+      unique(DepMap_ID)
+    
+    # Not sure if they were not in the dataset
+    vals <- all_cell_lines_in_mf %>% 
+      setNames(. %in% cell_lines_with_fusion, .) %>%
+      lapply(., FUN = function(x) { ifelse(x, 'Fusion', ifelse(x %in% cell_lines_in_fusion_ds, NA, NA))}) %>%
+      unlist()
+    
+    complete_profile[,f] <- vals[complete_profile$DepMap_ID]
+  }
+  
+  # Now create the specifics
+  for (g in specific_values_needed[[specific_context]][['cn']]) {
+    # g <- 'chr1q'
+    in_cn <- intersect(row.names(gene_cn), all_cell_lines_in_mf)
+    
+    cutoff_gain <- log2(1.4+1)
+    cutoff_loss <- log2(0.6+1)
+    if (grepl('chr', g)) {
+      cutoff_gain <- 0.15
+      cutoff_loss <- -0.15
+    }
+    
+    vals <- gene_cn[in_cn,g] %>%
+      lapply(., FUN = function(x) { ifelse(x > cutoff_gain, 'Copy gain', ifelse(x < cutoff_loss, 'Copy loss', NA))}) %>%
+      unlist() %>% 
+      setNames(., in_cn)
+    
+    vals[setdiff(all_cell_lines_in_mf, in_cn)] <- NA
+    
+    complete_profile[,paste0('cn_', g)] <- vals[complete_profile$DepMap_ID]
+  }
+  
+  for (g in specific_values_needed[[specific_context]][['mutations']]) {
+    in_mut <- intersect((mutations$Tumor_Sample_Barcode), all_cell_lines_in_mf)
+    
+    # Will want to edit this to get specifc types (and filter silent etc...)
+    vals <- mutations %>%
+      filter(Hugo_Symbol==g, (Tumor_Sample_Barcode) %in% in_mut) %>%
+      filter(Variant_annotation != "silent") %>%
+      mutate(DepMap_ID=(Tumor_Sample_Barcode)) %>%
+      group_by(DepMap_ID) %>%
+      dplyr::summarise(count=n()) %$%
+      setNames(rep('Mutation (SNP or INDEL)', nrow(.)), DepMap_ID)
+    
+    vals[setdiff(all_cell_lines_in_mf, in_mut)] <- NA
+    
+    complete_profile[,paste0('mutation_', g)] <- vals[complete_profile$DepMap_ID]
+  }
+  
+  for (g in specific_values_needed[[specific_context]]$cn) {
+    complete_profile[,g] <- complete_profile[,paste0('cn_', g)]
+  }
+  
+  for (g in specific_values_needed[[specific_context]]$mutations) {
+    complete_profile[,g] <- ifelse(
+      !is.na(complete_profile[,paste0('mutation_', g)]) | !(g %in% colnames(complete_profile)),
+      complete_profile[,paste0('mutation_', g)],
+      complete_profile[,g]
+    )
+  }
+  
+  # Get mutation order
+  gene_order <- complete_profile %>% 
+    dplyr::select(unique(c(specific_values_needed[[specific_context]]$mutations, specific_values_needed[[specific_context]]$cn))) %>%
+    gather(gene, type) %>%
+    filter(!grepl('^chr', gene)) %>%
+    filter(!is.na(type)) %>%
+    group_by(gene) %>%
+    dplyr::summarise(count=n()) %>%
+    filter(count > 3) %>%
+    arrange(-count) %$% gene
+  
+  cn_order <- complete_profile %>% 
+    dplyr::select(unique(c(specific_values_needed[[specific_context]]$mutations, specific_values_needed[[specific_context]]$cn))) %>%
+    gather(gene, type) %>%
+    filter(grepl('^chr', gene)) %>%
+    filter(!is.na(type)) %>%
+    group_by(gene) %>%
+    dplyr::summarise(count=n()) %>%
+    filter(count > 3) %>%
+    arrange(-count) %$% gene
+  
+  if (specific_context == 'Pediatric (CRISPR only)') {
+    # Add a type annotation at the top
+    row_order_for_plot <- c(
+      'Type', 'BREAK_1',
+      'BREAK_2',
+      unique(c(names(specific_values_needed[[specific_context]]$fusions))),
+      'BREAK_3',
+      unique(c(gene_order)),
+      'BREAK_4',
+      unique(cn_order)
+    ) 
+  } else {
+    # Add a type annotation at the top
+    row_order_for_plot <- c(
+      'Type', 'BREAK_1',
+      'CRISPR', 'CN', 'RNAseq', 'BREAK_2',
+      unique(c(names(specific_values_needed[[specific_context]]$fusions))),
+      'BREAK_3',
+      unique(c(gene_order)),
+      'BREAK_4',
+      unique(cn_order)
+    )
+  }
+  
+  complete_profile %<>% mutate(BREAK_1=NA, BREAK_2=NA, BREAK_3=NA, BREAK_4=NA)
+  
+  # If no fusions
+  if (length(specific_values_needed[[specific_context]]$fusions) == 0) {
+    complete_profile %<>% dplyr::select(-BREAK_3)
+    row_order_for_plot <- row_order_for_plot %>% .[. != 'BREAK_3']
+  }
+  
+  complete_profile %<>% left_join(., mf %>% dplyr::select(DepMap_ID, CCLE_name, Type), by='DepMap_ID')
+  
+  if (specific_context == 'Pediatric (CRISPR only)') {
+    for_plot_final <- complete_profile[,c('DepMap_ID', 'CCLE_name', row_order_for_plot)] %>%
+      gather(feature, value, -DepMap_ID, -CCLE_name) %>%
+      mutate(feature=factor(feature, levels=rev(row_order_for_plot))) %>%
+      group_by(CCLE_name) %>%
+      mutate(DS=length(which(value == 'Sequenced as indicated'))) %>%
+      ungroup() 
+  } else {
+    for_plot_final <- complete_profile[,c('DepMap_ID', 'CCLE_name', row_order_for_plot)] %>%
+      gather(feature, value, -DepMap_ID, -CCLE_name) %>%
+      mutate(feature=factor(feature, levels=rev(row_order_for_plot))) %>%
+      group_by(CCLE_name) %>%
+      mutate(DS=length(which(value == 'Sequenced as indicated'))) %>%
+      ungroup() %>%
+      filter(DS > 0)
+  }
+  
+  # Arrange by type, number of fusions and then by the number of each mutation
+  cell_line_order <- c()
+  breaks_added <- 0
+  for (lin in sort(unique(complete_profile$Type))) {
+    breaks_added <- breaks_added + 1
+    
+    clo <- complete_profile %>% 
+      filter(Type==lin) %>%
+      dplyr::select(Type, unique(c(names(specific_values_needed[[specific_context]]$fusions))), DepMap_ID, everything()) %>%
+      dplyr::arrange(!!! rlang::syms(c('Type', unique(names(specific_values_needed[[specific_context]]$fusions)), gene_order, cn_order))) %$%
+      CCLE_name %>% 
+      gsub('_.*', '', .)
+    cell_line_order <- c(cell_line_order, c(clo, paste0('BREAK_', breaks_added)))
+    
+    # To add white space will need to think about it
+    # for_plot_final %<>% rbind(., 
+    #   data.frame(DepMap_ID=c(NA), feature=NA, value=NA, CCLE_name=paste0('BREAK_', breaks_added), DS=NA, stringsAsFactors = F)
+    # )
+  }
+  
+  # Add breaks in between lineages, 
+  for_plot_final %<>% mutate(Name=factor(gsub('_.*', '', CCLE_name), levels=cell_line_order))
+  
+  # Legend number row
+  legend_rows <- ifelse(length(specific_values_needed[[specific_context]]$types) > 1, 6, 2)
+  font_size_x <- legend_rows + 3
+  
+  output_plots[[specific_context]] <- ggplot(for_plot_final, aes(Name, feature, fill=value)) +
+    geom_tile() +
+    geom_tile(data=for_plot_final %>% filter(!grepl('BREAK', feature)), color='black') +
+    guides(fill=guide_legend(nrow=legend_rows, byrow=FALSE, title = NULL)) +
+    xlab('') + ylab('') +
+    scale_fill_manual(na.value='white', 
+                      values = c(color_for_subtypes_vector[order(names(color_for_subtypes_vector))], c('.'='white', 'Sequenced as indicated'='gray', 'Fusion'='purple', 'Mutation (SNP or INDEL)'='black', 'Copy loss'='blue', 'Copy gain'='red')),
+                      breaks = c(names(color_for_subtypes_vector[order(names(color_for_subtypes_vector))]), '.', 'Sequenced as indicated', 'Fusion', 'Mutation (SNP or INDEL)', 'Copy gain', 'Copy loss')
+    ) +
+    scale_x_discrete(expand = c(0,0), position = 'top') +
+    scale_y_discrete(expand = c(0,0), breaks=(row_order_for_plot %>% .[which(!grepl('^BREAK', .))])) +
+    theme_Publication() +
+    theme(
+      axis.text.x = element_text(angle=90, hjust=0, vjust=0.5, size=4),
+      axis.line=element_blank(),
+      axis.ticks = element_blank(),
+      legend.position = 'bottom', legend.justification = 'left'
+    )
+  
+  print(output_plots[[specific_context]])
+  saveRDS(output_plots[[specific_context]], file = paste0('figures/cell_line_features/', specific_context, '_', version_to_use, '.rds'))
+  ggsave(output_plots[[specific_context]], filename = paste0('figures/cell_line_features/', specific_context, '_', version_to_use, '.pdf'), width = 16, height=24, units='cm', useDingbats=FALSE)
+}
+```
+
+### Tables of pediatric lines and adult lines for supplement
+
+#### Pediatric lines
+
+```{r include=TRUE}
+# Load Supplementary Table 1 from Ghandi, M., Huang, F.W., Jané-Valbuena, J. et al. Next-generation characterization of the Cancer Cell Line Encyclopedia. Nature 569, 503–508 (2019). https://doi-org.ezp-prod1.hul.harvard.edu/10.1038/s41586-019-1186-3
+CCLE2_Supplementary_Table_1 <- read_xlsx("input_files/41586_2019_1186_MOESM4_ESM.xlsx", sheet = 3)
+
+# Load doubling times
+doubling_times <- fread('input_files/doubling_times.csv') %>% 
+  dplyr::filter(!grepl("days", Doubling_Time_Hours)) %>%
+  dplyr::mutate(Estimated_Doubling_Time_Hours = as.numeric(Doubling_Time_Hours)) %>%
+  dplyr::select(DepMap_ID, Estimated_Doubling_Time_Hours)
+
+# Load treatment annotations
+treatment <- fread('input_files/pediatric_cell_line_treatment_from_literature.csv') %>%
+  dplyr::mutate(treatment = ifelse(grepl("unknown", treatment), "Unknown",
+                                   ifelse(grepl("none", treatment), "None", "Pre-treated")
+  )) %>%
+  dplyr::rename(LiteratureSearch_Age_Sex_Match_DepMap_Annotation = `age/sex valid? `,
+                LiteratureSearch_Previous_Treatment = treatment,
+                LiteratureSearch_Previous_Treatment_Details = `treatment details`,
+                LiteratureSearch_Paper_PMC_ID = `PMC ID`,
+                LiteratureSearch_Year_Earliest_Citation = `Year Created (earliest citation)`,
+                LiteratureSearch_Other_Annotations = `other annotations`) %>%
+  dplyr::select(DepMap_ID, dplyr::starts_with("Literature"))
+
+pediatric_lines_to_export <- sample_info %>% 
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type, PvA), by = "DepMap_ID") %>%
+  left_join(., doubling_times, by = "DepMap_ID") %>%
+  left_join(., treatment, by = "DepMap_ID") %>%
+  filter(PvA=="Pediatric") %>%
+  rename(Type_for_Manuscript = Type, 
+         Class_for_Manuscript = PvA) %>%
+  mutate(Dependency = ifelse(DepMap_ID %in% rownames(gene_dependency),
+                             "DepMap",
+                             "no")) %>%
+  mutate(RNAseq = ifelse(DepMap_ID %in% rownames(gene_expression), 
+                         ifelse(CCLE_Name %in% CCLE2_Supplementary_Table_1$CCLE_ID[CCLE2_Supplementary_Table_1$RNAseq],
+                                "CCLE",
+                                "DepMap"), 
+                         "no")) %>%
+  mutate(WES = ifelse(DepMap_ID %in% unlist(unique(mutations %>% filter(CGA_WES_AC != "" & !is.na(CGA_WES_AC)) %>% 
+                                                     dplyr::select(DepMap_ID))), 
+                      ifelse(CCLE_Name %in% CCLE2_Supplementary_Table_1$CCLE_ID[CCLE2_Supplementary_Table_1$WES_CCLE],
+                             "CCLE",
+                             "DepMap"), 
+                      "no")) %>%
+  mutate(SangerWES = ifelse(DepMap_ID %in% unlist(unique(mutations %>% filter(SangerRecalibWES_AC != "" & !is.na(SangerRecalibWES_AC)) %>% 
+                                                           dplyr::select(DepMap_ID))), "Sanger", "no")) %>%
+  mutate(SNParray = ifelse(CCLE_Name %in% CCLE2_Supplementary_Table_1$CCLE_ID[CCLE2_Supplementary_Table_1$`CN (array)`],
+                           "CCLE",
+                           "no"))
+
+pediatric_lines_to_export %>% datatable(options=list(scrollX=T))
+
+write.table(pediatric_lines_to_export, file = "figures/cell_line_features/ExtendedDataTable1_peds.txt", sep = "\t", row.names = F)
+```
+
+#### Adult lines
+
+```{r include=TRUE}
+adult_lines_to_export <- sample_info %>% 
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type, PvA), by = "DepMap_ID") %>%
+  left_join(., doubling_times, by = "DepMap_ID") %>%
+  left_join(., treatment, by = "DepMap_ID") %>%
+  filter(PvA!="Pediatric") %>%
+  rename(Type_for_Manuscript = Type, 
+         Class_for_Manuscript = PvA) %>%
+  mutate(Dependency = ifelse(DepMap_ID %in% rownames(gene_dependency),
+                             "DepMap",
+                             "no")) %>%
+  mutate(RNAseq = ifelse(DepMap_ID %in% rownames(gene_expression), 
+                         ifelse(CCLE_Name %in% CCLE2_Supplementary_Table_1$CCLE_ID[CCLE2_Supplementary_Table_1$RNAseq],
+                                "CCLE",
+                                "DepMap"), 
+                         "no")) %>%
+  mutate(WES = ifelse(DepMap_ID %in% unlist(unique(mutations %>% filter(CGA_WES_AC != "" & !is.na(CGA_WES_AC)) %>% 
+                                                     dplyr::select(DepMap_ID))), 
+                      ifelse(CCLE_Name %in% CCLE2_Supplementary_Table_1$CCLE_ID[CCLE2_Supplementary_Table_1$WES_CCLE],
+                             "CCLE",
+                             "DepMap"), 
+                      "no")) %>%
+  mutate(SangerWES = ifelse(DepMap_ID %in% unlist(unique(mutations %>% filter(SangerRecalibWES_AC != "" & !is.na(SangerRecalibWES_AC)) %>% 
+                                                           dplyr::select(DepMap_ID))), "Sanger", "no")) %>%
+  mutate(SNParray = ifelse(CCLE_Name %in% CCLE2_Supplementary_Table_1$CCLE_ID[CCLE2_Supplementary_Table_1$`CN (array)`],
+                           "CCLE",
+                           "no"))
+
+adult_lines_to_export %>% datatable(options=list(scrollX=T))
+
+write.table(adult_lines_to_export, file = "figures/cell_line_features/ExtendedDataTable1_adult.txt", sep = "\t", row.names = F)
+```
+
+### Alteration rates in cell lines for Extended Data Table
+
+```{r}
+specific_values_needed <- list( #PMID: 25186949
+  "Ewing"=list(
+    types=c("Ewing"),
+    # The name is what will be displayed, the value is the genes we look for
+    fusions=c('EWSR1-FLI1'='EWSR1-FLI1', 'EWSR1-ERG'='EWSR1-ERG', 'EWSR1-FEV'='EWSR1-FEV'),
+    cn=c('CDKN2A', 'TP53', 'chr8', 'chr1q', 'chr12', 'chr16q'),
+    mutations=c('STAG2', 'TP53', 'BCOR', 'EZH2', 'ZMYM3', 'EWSR1', 'KMT2C', 'KMT2D', 'PRDM9', 'SETD2'),
+    cn_loss=c('CDKN2A', 'chr16q'),
+    cn_gain=c('chr8', 'chr1q', 'chr12')
+  ),
+  "Hepatoblastoma"=list( #PMID: 25135868
+    types=c('Hepatoblastoma'),
+    cn=c('chr2', 'chr1q', 'chr20', 'chr6p', 'chr8q', 'chr12', 'chr17', 'chr11p', 'chr4q'),
+    mutations=c('CTNNB1', 'APC', 'NFE2L2'),
+    cn_loss=c('chr11p', 'chr4q'),
+    cn_gain=c('chr2', 'chr1q', 'chr20', 'chr6p', 'chr8q', 'chr12', 'chr17')
+  ),
+  "Medulloblastoma"=list( #PMID: 28726821
+    types=c('Medulloblastoma'), # BAI3 = ADGRB3 in cn and fusion
+    cn=c('PTCH1', 'TERT', 'DDX3X', 'PRDM6', 'CTNNB1', 'GFI1B', 'KMT2D', 'MYCN', 'MYC', 'SMARCA4', 'TP53', 'GLI2', 'KBTBD4', 'KDM6A', 'KMT2C', 'OTX2', 'CREBBP', 'GFI1', 'SMO', 'SUFU', 'ZMYM3', 'ATM', 'BCOR', 'BRCA2', 'CDK6', 'CTDNEP1', 'FBXW7', 'GSE1', 'PIK3CA', 'PTEN', 'TCF4', 'ZIC1', 'APC', 'ARID1A', 'ARID2', 'ADGRB3', 'CSNK2B', 'EPHA7', 'IDH1', 'MED12', 'PRKAR1A', 'SYNCRIP', 'TBR1'),
+    mutations=c('PTCH1', 'TERT', 'DDX3X', 'PRDM6', 'CTNNB1', 'GFI1B', 'KMT2D', 'MYCN', 'MYC', 'SMARCA4', 'TP53', 'GLI2', 'KBTBD4', 'KDM6A', 'KMT2C', 'OTX2', 'CREBBP', 'GFI1', 'SMO', 'SUFU', 'ZMYM3', 'ATM', 'BCOR', 'BRCA2', 'CDK6', 'CTDNEP1', 'FBXW7', 'GSE1', 'PIK3CA', 'PTEN', 'TCF4', 'ZIC1', 'APC', 'ARID1A', 'ARID2', 'ADGRB3', 'CSNK2B', 'EPHA7', 'IDH1', 'MED12', 'PRKAR1A', 'SYNCRIP', 'TBR1'),
+    fusiongenes=c('PTCH1', 'TERT', 'DDX3X', 'PRDM6', 'CTNNB1', 'GFI1B', 'KMT2D', 'MYCN', 'MYC', 'SMARCA4', 'TP53', 'GLI2', 'KBTBD4', 'KDM6A', 'KMT2C', 'OTX2', 'CREBBP', 'GFI1', 'SMO', 'SUFU', 'ZMYM3', 'ATM', 'BCOR', 'BRCA2', 'CDK6', 'CTDNEP1', 'FBXW7', 'GSE1', 'PIK3CA', 'PTEN', 'TCF4', 'ZIC1', 'APC', 'ARID1A', 'ARID2', 'ADGRB3', 'CSNK2B', 'EPHA7', 'IDH1', 'MED12', 'PRKAR1A', 'SYNCRIP', 'TBR1'),
+    alterations=c('PTCH1', 'TERT', 'DDX3X', 'PRDM6', 'CTNNB1', 'GFI1B', 'KMT2D', 'MYCN', 'MYC', 'SMARCA4', 'TP53', 'GLI2', 'KBTBD4', 'KDM6A', 'KMT2C', 'OTX2', 'CREBBP', 'GFI1', 'SMO', 'SUFU', 'ZMYM3', 'ATM', 'BCOR', 'BRCA2', 'CDK6', 'CTDNEP1', 'FBXW7', 'GSE1', 'PIK3CA', 'PTEN', 'TCF4', 'ZIC1', 'APC', 'ARID1A', 'ARID2', 'ADGRB3', 'CSNK2B', 'EPHA7', 'IDH1', 'MED12', 'PRKAR1A', 'SYNCRIP', 'TBR1')
+  ),
+  "Medulloblastoma_Grp3"=list( #PMID: 28726821
+    types=c('Medulloblastoma_Grp3'), # BAI3 = ADGRB3 in cn and fusion
+    cn=c('MYC', 'GFI1B', 'SMARCA4', 'KBTBD4', 'CTDNEP1', 'KMT2D', 'MYCN', 'GFI1', 'OTX2', 'BRCA2'),
+    mutations=c('MYC', 'GFI1B', 'SMARCA4', 'KBTBD4', 'CTDNEP1', 'KMT2D', 'MYCN', 'GFI1', 'OTX2', 'BRCA2'),
+    fusiongenes=c('MYC', 'GFI1B', 'SMARCA4', 'KBTBD4', 'CTDNEP1', 'KMT2D', 'MYCN', 'GFI1', 'OTX2', 'BRCA2'),
+    alterations=c('MYC', 'GFI1B', 'SMARCA4', 'KBTBD4', 'CTDNEP1', 'KMT2D', 'MYCN', 'GFI1', 'OTX2', 'BRCA2')
+  ),
+  "Neuroblastoma"=list( #PMID: 23334666
+    types=c('Neuroblastoma'),
+    cn=c('TP53', 'MYCN', 'ATRX', 'chr17q', 'chr11q', 'chr3p', 'chr2p', 'chr1p', 'chr1q'),
+    mutations=c('TP53', 'ALK', 'ATRX', 'PTPN11', 'MYCN', 'NRAS'),
+    cn_loss=c('TP53', 'ATRX', 'chr11q', 'chr3p', 'chr1p'),
+    cn_gain=c('MYCN', 'chr17q', 'chr2p', 'chr1q')
+  ),
+  "Osteosarcoma"=list( #PMID: 26632267
+    types=c('Osteosarcoma'),
+    cn=c('TP53', 'RB1', 'NUMA1', 'MDC1', 'BRCA2', 'ATRX', 'PTEN', 'MUTYH', 'FANCA', 'ATM', 'BAP1', 'RET', 'RECQL4', 'WRN'),
+    mutations=c('TP53', 'RB1', 'NUMA1', 'MDC1', 'BRCA2', 'ATRX', 'PTEN', 'MUTYH', 'FANCA', 'ATM', 'BAP1', 'RET', 'RECQL4', 'WRN'),
+    fusiongenes=c('TP53', 'RB1', 'NUMA1', 'MDC1', 'BRCA2', 'ATRX', 'PTEN', 'MUTYH', 'FANCA', 'ATM', 'BAP1', 'RET', 'RECQL4', 'WRN'),
+    loss_dis_mut=c('TP53', 'RB1', 'NUMA1', 'MDC1', 'BRCA2', 'ATRX', 'PTEN', 'MUTYH', 'FANCA', 'ATM', 'BAP1', 'RET', 'RECQL4', 'WRN')
+  ),
+  "Pediatric Germ Cell"=list( #PMID: 30896089
+    types=c('Pediatric Germ Cell'),
+    cn=c('FSIP2'),
+    mutations=c('KIT', 'KRAS', 'CDC27', 'NRAS'),
+    cn_gain=c('FSIP2')
+  ),
+  "Pediatric Glioma"=list( #PMID: 28357536
+    types=c('Pediatric Glioma'),
+    cn=c('EGFR', 'PDGFRA', 'CDKN2A', 'PTEN'),
+    mutations=c('H3F3A', 'H3F3B', 'TP53', 'IDH1', 'BRAF', 'CDKN2A', 'PTEN'),
+    inactivation=c('CDKN2A', 'PTEN'),
+    cn_gain=c('EGFR', 'PDGFRA')
+  ),
+  "Retinoblastoma"=list( #PMID: 24433356
+    types=c('Retinoblastoma'),
+    cn=c('RB1', 'CDH11', 'E2F3', 'MDM4', 'KIF14', 'DEK', 'MYCN'),
+    mutations=c('RB1', 'CDH11'),
+    inactivation=c('RB1', 'CDH11'),
+    cn_gain=c('E2F3', 'MDM4', 'KIF14', 'DEK', 'MYCN')
+  ),
+  "Rhabdoid"=list( #PMID: 26977886 26923874
+    types=c('Rhabdoid'), # MKL1 = MRTFA in cn and fusion
+    cn=c('SMARCB1','CABIN1','SPECC1L','NF2','EWSR1','LIF','TTC28','MRTFA','UPB1','DSCAM','BRD1','KMT2D','MBD1','MBD2','PHF21B','SMARCA4','SUZ12','ZBTB39'),
+    mutations=c('SMARCB1','CABIN1','SPECC1L','NF2','EWSR1','LIF','TTC28','MRTFA','UPB1','DSCAM','BRD1','KMT2D','MBD1','MBD2','PHF21B','SMARCA4','SUZ12','ZBTB39'),
+    fusiongenes=c('SMARCB1','CABIN1','SPECC1L','NF2','EWSR1','LIF','TTC28','MRTFA','UPB1','DSCAM','BRD1','KMT2D','MBD1','MBD2','PHF21B','SMARCA4','SUZ12','ZBTB39'),
+    loss_dis_mut=c('SMARCB1','CABIN1','SPECC1L','NF2','EWSR1','LIF','TTC28','MRTFA','UPB1','DSCAM','BRD1','KMT2D','MBD1','MBD2','PHF21B','SMARCA4','SUZ12','ZBTB39')
+  ),
+  "Rhabdomyosarcoma"=list( #PMID: 24436047
+    types=c('Rhabdomyosarcoma'),
+    # The name is what will be displayed, the value is the genes we look for
+    fusions=c('PAX3-FOXO1'='PAX3-FOXO1', 'PAX7-FOXO1'='PAX7-FOXO1'),
+    cn=c('CDK4','MDM2','MYCN','IGF1R','JUN','MET','CDKN2A','BCOR','FBXW7','PTEN', 'chr8', 'chr13', 'chr2'),
+    mutations=c('FGFR4', 'NRAS', 'PIK3CA', 'TP53', 'BCOR', 'FBXW7', 'KRAS', 'NF1', 'HRAS', 'CTNNB1', 'BUB1B', 'BRAF', 'CCND1', 'CCND2', 'IGF2'),
+    cn_loss=c('CDKN2A','BCOR','FBXW7','PTEN'),
+    cn_gain=c('CDK4','MDM2','MYCN','IGF1R','JUN','MET', 'chr8', 'chr13', 'chr2')
+  ),
+  "Synovial Sarcoma"=list(
+    types=c('Synovial Sarcoma'),
+    fusions=c('SS18-SSX1'='SS18-SSX1', 'SS18-SSX2'='SS18-SSX2')
+  )
+)
+
+specific_values_needed_cats <- list(
+  "Ewing"=c("fusions", "mutations", "cn_gain", "cn_loss"),
+  "Hepatoblastoma"=c("mutations", "cn_gain", "cn_loss"), 
+  "Medulloblastoma"=c("alterations"),
+  "Medulloblastoma_Grp3"=c("alterations"),
+  "Neuroblastoma"=c("mutations", "cn_loss", "cn_gain"), 
+  "Osteosarcoma"=c("loss_dis_mut"),
+  "Pediatric Germ Cell"=c("mutations", "cn_gain"),
+  "Pediatric Glioma"=c("mutations", "cn_gain", "inactivation"),
+  "Retinoblastoma"=c("inactivation", "cn_gain"),
+  "Rhabdoid"=c("loss_dis_mut"),
+  "Rhabdomyosarcoma"=c("fusions", "mutations", "cn_gain", "cn_loss"),
+  "Synovial Sarcoma"=c("fusions")
+)
+
+# Create an all lines type that combines everything
+all_types_list <- list(types=c(), fusions=c(), cn=c(), mutations=c())
+for (s in names(specific_values_needed)) {
+  all_types_list[['types']] <- unique(c(all_types_list[['types']], s))
+  all_types_list[['fusions']] <- c(all_types_list[['fusions']], specific_values_needed[[s]]$fusions)
+  all_types_list[['cn']] <- unique(c(all_types_list[['cn']], specific_values_needed[[s]]$cn))
+  all_types_list[['mutations']] <- unique(c(all_types_list[['mutations']], specific_values_needed[[s]]$mutations))
+  all_types_list[['fusiongenes']] <- unique(c(all_types_list[['fusiongenes']], specific_values_needed[[s]]$fusiongenes))
+}
+
+specific_values_needed[['Pediatric']] <- all_types_list
+specific_values_needed[['Pediatric (CRISPR only)']] <- all_types_list
+```
+
+```{r include=TRUE, fig.height=10}
+specific_context <- 'Pediatric (CRISPR only)'
+all_cell_lines_in_mf <- mf %>% filter(Type %in% specific_values_needed[[specific_context]]$types, CCLE_name != "") %$% DepMap_ID
+
+if (specific_context == 'Pediatric (CRISPR only)') {
+  all_cell_lines_in_mf %<>% intersect(., rownames(gene_dependency))
+}
+
+complete_profile <- data.frame(DepMap_ID=all_cell_lines_in_mf, stringsAsFactors = F)
+
+# Add the fusions
+for (f in names(specific_values_needed[[specific_context]][['fusions']])) {
+  g_l <- stringr::str_extract(specific_values_needed[[specific_context]][['fusions']][[f]], pattern = '^[A-Z0-9]+')
+  g_r <- stringr::str_extract(specific_values_needed[[specific_context]][['fusions']][[f]], pattern = '[A-Z0-9]+$')
+  
+  # Theoretically there are lines that could have no fusions...
+  cell_lines_in_fusion_ds <- intersect(all_cell_lines_in_mf, fusions$DepMap_ID)
+  
+  cell_lines_with_fusion <- fusions %>%
+    filter(DepMap_ID %in% all_cell_lines_in_mf) %>%
+    filter(grepl(paste0(g_l), `#FusionName`) & grepl(paste0(g_r), `#FusionName`)) %$%
+    unique(DepMap_ID)
+  
+  # Not sure if they were not in the dataset
+  vals <- all_cell_lines_in_mf %>% 
+    setNames(. %in% cell_lines_with_fusion, .) %>%
+    lapply(., FUN = function(x) { ifelse(x, 'Fusion', ifelse(x %in% cell_lines_in_fusion_ds, NA, NA))}) %>%
+    unlist()
+  
+  complete_profile[,f] <- vals[complete_profile$DepMap_ID]
+}
+
+# Add the fusion genes
+for (f in specific_values_needed[[specific_context]][['fusiongenes']]) {
+  gene_f <- paste0("^", f, " ")
+  
+  # Theoretically there are lines that could have no fusions...
+  cell_lines_in_fusion_ds <- intersect(all_cell_lines_in_mf, fusions$DepMap_ID)
+  
+  cell_lines_with_fusion <- fusions %>%
+    filter(DepMap_ID %in% all_cell_lines_in_mf) %>%
+    filter(grepl(paste0(gene_f), `LeftGene`) | grepl(paste0(gene_f), `RightGene`)) %$%
+    unique(DepMap_ID)
+  
+  # Not sure if they were not in the dataset
+  vals <- all_cell_lines_in_mf %>% 
+    setNames(. %in% cell_lines_with_fusion, .) %>%
+    lapply(., FUN = function(x) { ifelse(x, 'Fusion', ifelse(x %in% cell_lines_in_fusion_ds, NA, NA))}) %>%
+    unlist()
+  
+  complete_profile[,paste0('fusion_', f)] <- vals[complete_profile$DepMap_ID]
+}
+
+# Now create the specifics
+for (g in specific_values_needed[[specific_context]][['cn']]) {
+  # g <- 'chr1q'
+  in_cn <- intersect(row.names(gene_cn), all_cell_lines_in_mf)
+  
+  cutoff_gain <- log2(1.4+1)
+  cutoff_loss <- log2(0.6+1)
+  if (grepl('chr', g)) {
+    cutoff_gain <- 0.15
+    cutoff_loss <- -0.15
+  }
+  
+  vals <- gene_cn[in_cn,g] %>%
+    lapply(., FUN = function(x) { ifelse(x > cutoff_gain, 'Copy gain', ifelse(x < cutoff_loss, 'Copy loss', NA))}) %>%
+    unlist() %>% 
+    setNames(., in_cn)
+  
+  vals[setdiff(all_cell_lines_in_mf, in_cn)] <- NA
+  
+  complete_profile[,paste0('cn_', g)] <- vals[complete_profile$DepMap_ID]
+}
+
+for (g in specific_values_needed[[specific_context]][['mutations']]) {
+  in_mut <- intersect((mutations$Tumor_Sample_Barcode), all_cell_lines_in_mf)
+  
+  # MKL1 = MRTFA in cn and fusion & not in muts
+  # BAI3 = ADGRB3 in cn and fusion & not in muts
+  g1 <- g
+  if(g=="ADGRB3") { g1 <- "BAI3" }
+  if(g=="MRTFA") { g1 <- "MKL1" }
+  
+  # Will want to edit this to get specifc types (and filter silent etc...)
+  vals <- mutations %>%
+    filter(Hugo_Symbol==g1, (Tumor_Sample_Barcode) %in% in_mut) %>%
+    filter(Variant_annotation != "silent") %>%
+    mutate(DepMap_ID=(Tumor_Sample_Barcode)) %>%
+    group_by(DepMap_ID) %>%
+    dplyr::summarise(count=n()) %$%
+    setNames(rep('Mutation (SNP or INDEL)', nrow(.)), DepMap_ID)
+  
+  vals[setdiff(all_cell_lines_in_mf, in_mut)] <- NA
+  
+  complete_profile[,paste0('mutation_', g)] <- vals[complete_profile$DepMap_ID]
+}
+
+complete_profile %<>% dplyr::left_join(., mf %>% dplyr::select(DepMap_ID, Type), by = "DepMap_ID")
+
+```
+
+```{r}
+medullo_grp3_lines <- mf %>% dplyr::filter(T3 == "med_group_3") %$% DepMap_ID
+
+{
+  sink("figures/cell_line_features/ExtendedDataTable_CellLineAlterationRate.txt")
+  for(t in all_types_list$types)
+  {
+    if (t != "Medulloblastoma_Grp3")
+    {
+      cat(t, "\n")
+      
+      if ('fusions' %in% specific_values_needed_cats[[t]])
+      {
+        cat("\tFusions", "\n")
+        for(f in specific_values_needed[[t]][['fusions']])
+        {
+          num1 <- (complete_profile %>% 
+                     dplyr::filter(Type == t) %>% 
+                     dplyr::select(f) %>% 
+                     dplyr::filter(!is.na(eval(as.name(f)))) %>% 
+                     dim())[1]
+          
+          num2 <- (complete_profile %>% 
+                     dplyr::filter(Type == t) %>% 
+                     dplyr::select(f) %>% 
+                     dim())[1]
+          
+          cat(paste0('\t', f, '\t', round(num1/num2 * 100), "% (", num1, "/", num2, ")\n"))
+        }
+      }
+      
+      if ('mutations' %in% specific_values_needed_cats[[t]])
+      {
+        cat("\tMutations", "\n")
+        for(f in specific_values_needed[[t]][['mutations']])
+        {
+          num1 <- (complete_profile %>% 
+                     dplyr::filter(Type == t) %>% 
+                     dplyr::select(paste0('mutation_', f)) %>% 
+                     dplyr::filter(!is.na(eval(as.name(paste0('mutation_', f))))) %>% 
+                     dim())[1]
+          
+          num2 <- (complete_profile %>% 
+                     dplyr::filter(Type == t) %>% 
+                     dplyr::select(paste0('mutation_', f)) %>% 
+                     dim())[1]
+          
+          cat(paste0('\t', f, '\t', round(num1/num2 * 100), "% (", num1, "/", num2, ")\n"))
+        }
+      }
+      
+      if ('cn' %in% specific_values_needed_cats[[t]])
+      {
+        cat("\tCN loss", "\n")
+        for(f in specific_values_needed[[t]][['cn']])
+        {
+          num1 <- (complete_profile %>% 
+                     dplyr::filter(Type == t) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dplyr::filter(grepl("loss", eval(as.name(paste0('cn_', f))))) %>% 
+                     dim())[1]
+          
+          num2 <- (complete_profile %>% 
+                     dplyr::filter(Type == t) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dim())[1]
+          
+          cat(paste0('\t', f, '\t', round(num1/num2 * 100), "% (", num1, "/", num2, ")\n"))
+        }
+        cat("\tCN gain", "\n")
+        for(f in specific_values_needed[[t]][['cn']])
+        {
+          num1 <- (complete_profile %>% 
+                     dplyr::filter(Type == t) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dplyr::filter(grepl("gain", eval(as.name(paste0('cn_', f))))) %>% 
+                     dim())[1]
+          
+          num2 <- (complete_profile %>% 
+                     dplyr::filter(Type == t) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dim())[1]
+          
+          cat(paste0('\t', f, '\t', round(num1/num2 * 100), "% (", num1, "/", num2, ")\n"))
+        }
+      }
+      
+      if ('cn_loss' %in% specific_values_needed_cats[[t]])
+      {
+        cat("\tCN loss", "\n")
+        for(f in specific_values_needed[[t]][['cn_loss']])
+        {
+          num1 <- (complete_profile %>% 
+                     dplyr::filter(Type == t) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dplyr::filter(grepl("loss", eval(as.name(paste0('cn_', f))))) %>% 
+                     dim())[1]
+          
+          num2 <- (complete_profile %>% 
+                     dplyr::filter(Type == t) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dim())[1]
+          
+          cat(paste0('\t', f, '\t', round(num1/num2 * 100), "% (", num1, "/", num2, ")\n"))
+        }
+      }
+      
+      if ('cn_gain' %in% specific_values_needed_cats[[t]])
+      {
+        cat("\tCN gain", "\n")
+        for(f in specific_values_needed[[t]][['cn_gain']])
+        {
+          num1 <- (complete_profile %>% 
+                     dplyr::filter(Type == t) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dplyr::filter(grepl("gain", eval(as.name(paste0('cn_', f))))) %>% 
+                     dim())[1]
+          
+          num2 <- (complete_profile %>% 
+                     dplyr::filter(Type == t) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dim())[1]
+          
+          cat(paste0('\t', f, '\t', round(num1/num2 * 100), "% (", num1, "/", num2, ")\n"))
+        }
+      }
+      
+      if ('alterations' %in% specific_values_needed_cats[[t]])
+      {
+        cat("\tAlterations", "\n")
+        for(f in specific_values_needed[[t]][['alterations']]) #assumes that we saved mutation, fusion and cn for the tumor types that need overall alterations
+        {
+          num1 <- (complete_profile %>% 
+                     dplyr::filter(Type == t) %>% 
+                     dplyr::select(paste0('cn_', f),
+                                   paste0('mutation_', f),
+                                   paste0('fusion_', f)) %>% 
+                     dplyr::filter(!is.na(eval(as.name(paste0('cn_', f)))) | 
+                                     !is.na(eval(as.name(paste0('mutation_', f)))) |
+                                     !is.na(eval(as.name(paste0('fusion_', f))))) %>% 
+                     dim())[1]
+          
+          num2 <- (complete_profile %>% 
+                     dplyr::filter(Type == t) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dim())[1]
+          cat(paste0('\t', f, '\t', round(num1/num2 * 100), "% (", num1, "/", num2, ")\n"))
+        }
+      }
+      
+      if ('loss_dis_mut' %in% specific_values_needed_cats[[t]])
+      {
+        cat("\tLoss, fusion, or mutation", "\n")
+        for(f in specific_values_needed[[t]][['loss_dis_mut']]) #assumes that we saved mutation, fusion and cn for the tumor types that need overall alterations
+        {
+          num1 <- (complete_profile %>% 
+                     dplyr::filter(Type == t) %>% 
+                     dplyr::select(paste0('cn_', f),
+                                   paste0('mutation_', f),
+                                   paste0('fusion_', f)) %>% 
+                     dplyr::filter(grepl("loss", eval(as.name(paste0('cn_', f)))) | 
+                                     !is.na(eval(as.name(paste0('mutation_', f)))) |
+                                     !is.na(eval(as.name(paste0('fusion_', f))))) %>% 
+                     dim())[1]
+          
+          num2 <- (complete_profile %>% 
+                     dplyr::filter(Type == t) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dim())[1]
+          cat(paste0('\t', f, '\t', round(num1/num2 * 100), "% (", num1, "/", num2, ")\n"))
+        }
+      }
+      
+      if ('inactivation' %in% specific_values_needed_cats[[t]])
+      {
+        cat("\tLoss or mutation", "\n")
+        for(f in specific_values_needed[[t]][['inactivation']]) #assumes that we saved mutation, fusion and cn for the tumor types that need overall alterations
+        {
+          num1 <- (complete_profile %>% 
+                     dplyr::filter(Type == t) %>% 
+                     dplyr::select(paste0('cn_', f),
+                                   paste0('mutation_', f)) %>% 
+                     dplyr::filter(grepl("loss", eval(as.name(paste0('cn_', f)))) | 
+                                     !is.na(eval(as.name(paste0('mutation_', f))))) %>% 
+                     dim())[1]
+          
+          num2 <- (complete_profile %>% 
+                     dplyr::filter(Type == t) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dim())[1]
+          cat(paste0('\t', f, '\t', round(num1/num2 * 100), "% (", num1, "/", num2, ")\n"))
+        }
+      }
+    }
+    
+    if (t == "Medulloblastoma_Grp3")
+    {
+      cat(t, "\n")
+      
+      if ('fusions' %in% specific_values_needed_cats[[t]])
+      {
+        cat("\tFusions", "\n")
+        for(f in specific_values_needed[[t]][['fusions']])
+        {
+          num1 <- (complete_profile %>% 
+                     dplyr::filter(DepMap_ID %in% medullo_grp3_lines) %>% 
+                     dplyr::select(f) %>% 
+                     dplyr::filter(!is.na(eval(as.name(f)))) %>% 
+                     dim())[1]
+          
+          num2 <- (complete_profile %>% 
+                     dplyr::filter(DepMap_ID %in% medullo_grp3_lines) %>% 
+                     dplyr::select(f) %>% 
+                     dim())[1]
+          
+          cat(paste0('\t', f, '\t', round(num1/num2 * 100), "% (", num1, "/", num2, ")\n"))
+        }
+      }
+      
+      if ('mutations' %in% specific_values_needed_cats[[t]])
+      {
+        cat("\tMutations", "\n")
+        for(f in specific_values_needed[[t]][['mutations']])
+        {
+          num1 <- (complete_profile %>% 
+                     dplyr::filter(DepMap_ID %in% medullo_grp3_lines) %>% 
+                     dplyr::select(paste0('mutation_', f)) %>% 
+                     dplyr::filter(!is.na(eval(as.name(paste0('mutation_', f))))) %>% 
+                     dim())[1]
+          
+          num2 <- (complete_profile %>% 
+                     dplyr::filter(DepMap_ID %in% medullo_grp3_lines) %>% 
+                     dplyr::select(paste0('mutation_', f)) %>% 
+                     dim())[1]
+          
+          cat(paste0('\t', f, '\t', round(num1/num2 * 100), "% (", num1, "/", num2, ")\n"))
+        }
+      }
+      
+      if ('cn' %in% specific_values_needed_cats[[t]])
+      {
+        cat("\tCN loss", "\n")
+        for(f in specific_values_needed[[t]][['cn']])
+        {
+          num1 <- (complete_profile %>% 
+                     dplyr::filter(DepMap_ID %in% medullo_grp3_lines) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dplyr::filter(grepl("loss", eval(as.name(paste0('cn_', f))))) %>% 
+                     dim())[1]
+          
+          num2 <- (complete_profile %>% 
+                     dplyr::filter(DepMap_ID %in% medullo_grp3_lines) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dim())[1]
+          
+          cat(paste0('\t', f, '\t', round(num1/num2 * 100), "% (", num1, "/", num2, ")\n"))
+        }
+        cat("\tCN gain", "\n")
+        for(f in specific_values_needed[[t]][['cn']])
+        {
+          num1 <- (complete_profile %>% 
+                     dplyr::filter(DepMap_ID %in% medullo_grp3_lines) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dplyr::filter(grepl("gain", eval(as.name(paste0('cn_', f))))) %>% 
+                     dim())[1]
+          
+          num2 <- (complete_profile %>% 
+                     dplyr::filter(DepMap_ID %in% medullo_grp3_lines) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dim())[1]
+          
+          cat(paste0('\t', f, '\t', round(num1/num2 * 100), "% (", num1, "/", num2, ")\n"))
+        }
+      }
+      
+      if ('cn_loss' %in% specific_values_needed_cats[[t]])
+      {
+        cat("\tCN loss", "\n")
+        for(f in specific_values_needed[[t]][['cn_loss']])
+        {
+          num1 <- (complete_profile %>% 
+                     dplyr::filter(DepMap_ID %in% medullo_grp3_lines) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dplyr::filter(grepl("loss", eval(as.name(paste0('cn_', f))))) %>% 
+                     dim())[1]
+          
+          num2 <- (complete_profile %>% 
+                     dplyr::filter(DepMap_ID %in% medullo_grp3_lines) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dim())[1]
+          
+          cat(paste0('\t', f, '\t', round(num1/num2 * 100), "% (", num1, "/", num2, ")\n"))
+        }
+      }
+      
+      if ('cn_gain' %in% specific_values_needed_cats[[t]])
+      {
+        cat("\tCN gain", "\n")
+        for(f in specific_values_needed[[t]][['cn_gain']])
+        {
+          num1 <- (complete_profile %>% 
+                     dplyr::filter(DepMap_ID %in% medullo_grp3_lines) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dplyr::filter(grepl("gain", eval(as.name(paste0('cn_', f))))) %>% 
+                     dim())[1]
+          
+          num2 <- (complete_profile %>% 
+                     dplyr::filter(DepMap_ID %in% medullo_grp3_lines) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dim())[1]
+          
+          cat(paste0('\t', f, '\t', round(num1/num2 * 100), "% (", num1, "/", num2, ")\n"))
+        }
+      }
+      
+      if ('alterations' %in% specific_values_needed_cats[[t]])
+      {
+        cat("\tAlterations", "\n")
+        for(f in specific_values_needed[[t]][['alterations']]) #assumes that we saved mutation, fusion and cn for the tumor types that need overall alterations
+        {
+          num1 <- (complete_profile %>% 
+                     dplyr::filter(DepMap_ID %in% medullo_grp3_lines) %>% 
+                     dplyr::select(paste0('cn_', f),
+                                   paste0('mutation_', f),
+                                   paste0('fusion_', f)) %>% 
+                     dplyr::filter(!is.na(eval(as.name(paste0('cn_', f)))) | 
+                                     !is.na(eval(as.name(paste0('mutation_', f)))) |
+                                     !is.na(eval(as.name(paste0('fusion_', f))))) %>% 
+                     dim())[1]
+          
+          num2 <- (complete_profile %>% 
+                     dplyr::filter(DepMap_ID %in% medullo_grp3_lines) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dim())[1]
+          cat(paste0('\t', f, '\t', round(num1/num2 * 100), "% (", num1, "/", num2, ")\n"))
+        }
+      }
+      
+      if ('loss_dis_mut' %in% specific_values_needed_cats[[t]])
+      {
+        cat("\tLoss, fusion, or mutation", "\n")
+        for(f in specific_values_needed[[t]][['loss_dis_mut']]) #assumes that we saved mutation, fusion and cn for the tumor types that need overall alterations
+        {
+          num1 <- (complete_profile %>% 
+                     dplyr::filter(DepMap_ID %in% medullo_grp3_lines) %>% 
+                     dplyr::select(paste0('cn_', f),
+                                   paste0('mutation_', f),
+                                   paste0('fusion_', f)) %>% 
+                     dplyr::filter(grepl("loss", eval(as.name(paste0('cn_', f)))) | 
+                                     !is.na(eval(as.name(paste0('mutation_', f)))) |
+                                     !is.na(eval(as.name(paste0('fusion_', f))))) %>% 
+                     dim())[1]
+          
+          num2 <- (complete_profile %>% 
+                     dplyr::filter(DepMap_ID %in% medullo_grp3_lines) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dim())[1]
+          cat(paste0('\t', f, '\t', round(num1/num2 * 100), "% (", num1, "/", num2, ")\n"))
+        }
+      }
+      
+      if ('inactivation' %in% specific_values_needed_cats[[t]])
+      {
+        cat("\tLoss or mutation", "\n")
+        for(f in specific_values_needed[[t]][['inactivation']]) #assumes that we saved mutation, fusion and cn for the tumor types that need overall alterations
+        {
+          num1 <- (complete_profile %>% 
+                     dplyr::filter(DepMap_ID %in% medullo_grp3_lines) %>% 
+                     dplyr::select(paste0('cn_', f),
+                                   paste0('mutation_', f)) %>% 
+                     dplyr::filter(grepl("loss", eval(as.name(paste0('cn_', f)))) | 
+                                     !is.na(eval(as.name(paste0('mutation_', f))))) %>% 
+                     dim())[1]
+          
+          num2 <- (complete_profile %>% 
+                     dplyr::filter(DepMap_ID %in% medullo_grp3_lines) %>% 
+                     dplyr::select(paste0('cn_', f)) %>% 
+                     dim())[1]
+          cat(paste0('\t', f, '\t', round(num1/num2 * 100), "% (", num1, "/", num2, ")\n"))
+        }
+      }
+    }
+    
+  }
+  sink()
+}
+
+```
+
+
+## Session Info
+
+```{r session_info, include=TRUE, echo=TRUE, results='markup'}
+devtools::session_info()
+```
+
+```{r include=TRUE}
+as.data.frame(`Dataset Used`) %>% datatable(options=list(scrollX=T))
+```

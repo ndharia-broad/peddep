@@ -1,0 +1,809 @@
+---
+title: "CNA Figures"
+author: "Neekesh Dharia & Guillaume Kugener"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include=FALSE, message=FALSE, warning = FALSE)
+source('setup.R')
+source('load_data.R')
+```
+
+
+# Generated using: `r toupper(version_to_use)`
+
+
+```{r load_needed_datasets}
+# This script uses the following datasets:
+mf <- mf
+segment_cn <- load_segment_cn()
+gene_cn <- load_gene_cn()
+gene_dependency <- load_gene_dependency()
+gene_effect <- load_gene_effect()
+gene_lrt_table <- load_lrt_table()
+achilles_common_essentials <- load_achilles_common_essentials()
+fusions <- load_fusions()
+
+if(!dir.exists('figures')) { dir.create('figures') }
+if(!dir.exists('figures/copy_number')) { dir.create('figures/copy_number') }
+```
+
+The table below highlights all of the cell lines that are included in the analyses and the types that they are annotated as:
+
+```{r}
+cell_lines_included_table <- right_join(segment_cn %>% dplyr::select(DepMap_ID, Source) %>% unique(),
+                                       mf %>% dplyr::select(DepMap_ID, CCLE_name, Type), by = "DepMap_ID") %>%
+  dplyr::select(DepMap_ID, CCLE_name, everything()) %>%
+  dplyr::mutate(Source = ifelse(is.na(Source), "NA", Source))
+```
+
+```{r include=TRUE} 
+cell_lines_included_table %>% datatable(options=list(scrollX=T), rownames = F)
+```
+
+
+# Overview
+
+* Compare number of CNAs per cell line to number of dependencies in a cell line
+* Create heatmaps of copy number across chromosomes in cell lines
+
+```{r}
+# Input chromosome coordinates from hg38 and fix annotation
+chr_bp_cutoffs <- read_tsv('input_files/hg38_cytoband.txt', col_names = F, col_types = list(col_character(),
+                                                                                         col_double(), 
+                                                                                         col_double(), 
+                                                                                         col_character(),
+                                                                                         col_character())) 
+chr_bp_cutoffs %<>% mutate(`#chromosome`=gsub('chr', '', X1)) %>% 
+  mutate(bp_start=X2+ 1, bp_stop=X3) %>% 
+  mutate(arm=stringr::str_extract(pattern='[pq]',string=X4)) %>% 
+  mutate(band=gsub('[pq]', '', X4))
+
+cutoffs <- chr_bp_cutoffs %>% 
+  group_by(`#chromosome`) %>% 
+  dplyr::summarize(pos=max(bp_stop)) %>%
+  dplyr::mutate(chr_name = ifelse(`#chromosome` %in% seq(1,21), 
+                                  paste0('chr', strtoi(`#chromosome`) + 1), 
+                                  ifelse(`#chromosome`==22, 
+                                         'chrX', 
+                                         ifelse(`#chromosome`=='X', 
+                                                'chrY', 
+                                                'chrZ')))) %$% 
+  setNames(pos, chr_name)
+
+cutoffs_final <- cutoffs[paste0('chr', c(seq(2, 22), 'X', 'Y'))] %>% cumsum()
+cutoffs_final['chr1'] = 0
+```
+
+```{r}
+segment_calls_all <- segment_cn %>%
+  inner_join(., mf %>% dplyr::select(DepMap_ID, Type), by='DepMap_ID') %>%
+  mutate(Start_continuous=Start + cutoffs_final[paste0('chr', Chromosome)], End_continuous=End + cutoffs_final[paste0('chr', Chromosome)]) %>%
+  mutate(Start_continuous=Start_continuous/10^6, End_continuous=End_continuous/10^6)
+
+cutoffs_chr_for_plotting <- cutoffs_final/10^6
+cutoffs_chr_for_plotting['chr1'] = min(segment_calls_all$Start_continuous, na.rm = T)
+```
+
+
+### Copy number alterations (CNAs) per cell line
+
+```{r}
+# For each cell line, calculate number of CNAs
+by_cl_cna_counts <- apply(gene_cn, 1, FUN = function(x) length(which(x >= log2(1.5+1) | x <= log2(0.5+1))))
+```
+
+```{r}
+# Merge with lineage and then plot
+data_for_cna_totals_counts <- mf %>%
+  filter(DepMap_ID %in% names(by_cl_cna_counts)) %>%
+  dplyr::select(DepMap_ID, Type, PvA) %>%
+  mutate(counts=by_cl_cna_counts[DepMap_ID]) %>%
+  group_by(Type) %>%
+  dplyr::mutate(in_lineage_rank=rank(counts)/max(n(),2)) %>%
+  dplyr::mutate(lineage_med=median(counts)) %>%
+  ungroup() %>%
+  arrange(lineage_med, in_lineage_rank)
+
+data_for_cna_totals_counts %<>% mutate(Group=ifelse(PvA=='Pediatric', Type, 'Adult'))
+
+type_rank <- data_for_cna_totals_counts %>% 
+  group_by(Type) %>% 
+  dplyr::summarise(med=median(counts)) %$%
+  setNames(med, Type) %>% .[order(.)] %>% names()
+
+data_for_cna_totals_counts %<>% mutate(Type=factor(Type, levels=type_rank)) %<>%
+  mutate(plot_rank=in_lineage_rank + as.integer(Type)) %>% 
+  group_by(Type) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(Type,' (n=',n,')')) %>%
+  ungroup()
+
+cl_order <- data_for_cna_totals_counts %$% setNames(plot_rank, DepMap_ID) %>% .[order(.)]
+
+# Get coordindates for tick marks
+labels_coords <- data.frame(DepMap_ID=names(cl_order), val=cl_order) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type) %>% distinct(), by='DepMap_ID') %>%
+  left_join(., data_for_cna_totals_counts %>% dplyr::select(DepMap_ID, label) %>% distinct(), by='DepMap_ID') %>%
+  group_by(label) %>%
+  dplyr::summarise(v=ifelse(max(val)==min(val), val, (max(val)+floor(min(val)))/2)) %$%
+  setNames(v, label)
+
+cna_counts_for_plot <- data_for_cna_totals_counts %>%
+  mutate(CL_for_plot=factor(DepMap_ID, levels=names(cl_order)))
+
+# Add the median line segment
+med_segs <- cna_counts_for_plot %>% 
+  group_by(Type) %>%
+  dplyr::summarise(
+    x = floor(min(plot_rank))+0.25, xend=ceiling(max(plot_rank))-0.25,
+    y = median(counts)
+  ) %>% 
+  mutate(x=ifelse(x > xend, x - 1, x)) %>%
+  arrange(x)
+
+# color only pediatric samples
+cna_plot <- ggplot(cna_counts_for_plot, aes(plot_rank, (counts), color=Group)) +
+  geom_point(aes(fill=Group), pch=21, alpha=0.75, size=3) +
+  geom_segment(data=med_segs, aes(x=x, xend=xend, y=y, yend=y, group=Type), color='black', size=0.5) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey')) +
+  theme_bw() + 
+  ylab('Total CNAs\n(|relative ploidy change| > 0.5)') + xlab('') +
+  scale_x_continuous(breaks=labels_coords, labels=names(labels_coords)) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+```
+
+```{r include=TRUE}
+cna_plot
+
+saveRDS(cna_plot, file = paste0('figures/copy_number/cna_by_lineage_plot', version_to_use, '.rds'))
+ggsave(cna_plot, filename = paste0('figures/copy_number/cna_by_lineage_plot', version_to_use, '.pdf'), 
+       width=20, height=14, units='cm', useDingbats=FALSE)
+```
+
+
+### Copy number alterations (CNAs) in fibroblasts, pediatric tumor and adult tumor cell lines
+
+```{r include=TRUE}
+### Plot cmparison of peds v adults
+cna_counts_for_plot %<>% mutate(PvA=ifelse(Type=="Fibroblast","Fibroblast",PvA)) %>% filter(Type!="Immortalized")
+cna_counts_for_plot$PvA <- factor(cna_counts_for_plot$PvA, levels = c("Fibroblast", "Pediatric", "Adult"))
+cna_counts_for_plot %<>% group_by(PvA) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(PvA,' (n=',n,')')) %>%
+  ungroup()
+cna_plot <- ggplot(cna_counts_for_plot, aes(x = PvA, y = (counts), fill=PvA, color=PvA)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  scale_fill_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='black')) +
+  scale_color_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='black')) +
+  theme_bw() +
+  xlab('') + ylab('Total CNAs\n(|relative ploidy change| > 0.5)') +
+  scale_x_discrete(labels=setNames(unique(cna_counts_for_plot$label), unique(cna_counts_for_plot$PvA))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means(comparisons = list(c("Pediatric","Fibroblast"), c("Pediatric","Adult"), c("Fibroblast","Adult")), label.y = c(7500, 8000, 8700)) 
+#  stat_compare_means(method = "anova", label.y = 30)     # Add global Anova p-value
+
+cna_plot
+saveRDS(cna_plot, file = paste0('figures/copy_number/peds_v_adult_cna_plot', version_to_use, '.rds'))
+ggsave(cna_plot, filename = paste0('figures/copy_number/peds_v_adult_cna_plot', version_to_use, '.pdf'), height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+
+### Copy number alterations (CNAs) compared to number of dependencies per cell line
+
+```{r}
+lrt_genes <- gene_lrt_table %>% filter((lrt) > 100, skewed_left) %$%
+  gene
+
+achilles_non_essentials <- colSums(gene_dependency >= 0.5, na.rm = T)
+achilles_non_essentials <- names(achilles_non_essentials[achilles_non_essentials == 0])
+
+lrt_genes_ceres <- lrt_genes
+lrt_genes_ceres <- lrt_genes_ceres[!(lrt_genes_ceres %in% c(achilles_non_essentials, achilles_common_essentials$gene))]
+
+# Dependencies (prob > 0.5) by type
+total_deps_by_cl_lrt_only <- apply(gene_dependency[,lrt_genes_ceres], 1, FUN = function(x) length(x[x > 0.5]))
+total_deps_by_cl <- apply(gene_dependency[,], 1, FUN = function(x) length(x[x > 0.5]))
+
+counts_prob_dep_df <- data.frame(total_deps_by_cl) %>%
+  mutate(DepMap_ID=row.names(.)) %>%
+  mutate(total_deps_by_cl_lrt_only=total_deps_by_cl_lrt_only[DepMap_ID]) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type, PvA), by='DepMap_ID') %>%
+  mutate(Group=ifelse(PvA=='Adult', PvA, Type))
+
+counts_prob_dep_df_order <- counts_prob_dep_df %>%
+  group_by(Type) %>%
+  dplyr::summarise(med=median(total_deps_by_cl, na.rm = T)) %>%
+  arrange(med) %$% Type
+
+counts_prob_dep_df_order_lrt_only <- counts_prob_dep_df %>%
+  group_by(Type) %>%
+  dplyr::summarise(med=median(total_deps_by_cl_lrt_only, na.rm = T)) %>%
+  arrange(med) %$% Type
+
+counts_prob_dep_df %<>% mutate(Type1=factor(Type, levels=counts_prob_dep_df_order), Type2=factor(Type, levels=counts_prob_dep_df_order_lrt_only))
+```
+
+```{r include=TRUE}
+# combining dependency and CN
+# Simple scatter plot, coloring the pediatric samples
+for_plot_count_cna_deps <- plyr::join(cna_counts_for_plot, counts_prob_dep_df[,1:3], by="DepMap_ID") %>%
+  arrange(Group)
+
+cnas_vs_deps <- ggplot(for_plot_count_cna_deps %>% dplyr::filter(!is.na(total_deps_by_cl)), 
+                       aes(total_deps_by_cl, (counts), fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey')) +
+  theme_bw() +
+  xlab('Number of dependencies') + ylab('Total CNAs\n(|relative ploidy change| > 0.5)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = 'y ~ x')
+
+cnas_vs_deps
+saveRDS(cnas_vs_deps, file = paste0('figures/copy_number/deps_v_cnas_across_lineages_', version_to_use, '.rds'))
+ggsave(cnas_vs_deps, filename = paste0('figures/copy_number/deps_v_cnas_across_lineages_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+cnas_vs_deps <- ggplot(for_plot_count_cna_deps %>% dplyr::filter(!is.na(total_deps_by_cl_lrt_only)), 
+                       aes(total_deps_by_cl_lrt_only, (counts), fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey')) +
+  theme_bw() +
+  xlab('Number of selective dependencies') + ylab('Total CNAs\n(|relative ploidy change| > 0.5)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none', 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = 'y ~ x')
+
+cnas_vs_deps
+saveRDS(cnas_vs_deps, file = paste0('figures/copy_number/depsLRT_v_cnas_across_lineages_', version_to_use, '.rds'))
+ggsave(cnas_vs_deps, filename = paste0('figures/copy_number/depsLRT_v_cnas_across_lineages_', version_to_use, '.pdf'), height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+
+### Adult tumor copy number alteration plot
+
+```{r}
+# Mutate segmented calls 
+adult_final_cn_seg_calls <- segment_calls_all %>%
+  filter(!(DepMap_ID %in% pediatric_lines$DepMap_ID)) %>%
+  filter(DepMap_ID %in% mf$DepMap_ID) %>%
+  mutate(Type=factor(Type, levels=setdiff(names(complete_type_colors), pediatric_types)))
+```
+
+```{r}
+adult_gn_level <- gene_cn[intersect(adult_final_cn_seg_calls$DepMap_ID, row.names(gene_cn)),]
+adult_final_cn_seg_calls %<>% filter(DepMap_ID %in% row.names(adult_gn_level))
+
+adult_genes_to_use <- apply(adult_gn_level, 2, FUN = function(x) length(which(is.na(x)))) %>% .[which(. == 0)]
+
+adult_for_counting <- adult_gn_level[,names(adult_genes_to_use)] %>% as.data.frame() %>%
+  mutate(DepMap_ID=row.names(.)) %>%
+  gather(variable, value, -DepMap_ID) %>% 
+  inner_join(., mf %>% dplyr::select(DepMap_ID, Type), by='DepMap_ID') %>%
+  group_by(Type, DepMap_ID) %>%
+  dplyr::summarise(
+    count=n(),
+    num_del=length(which((value) <= log2(0.5+1))),
+    num_amp=length(which((value) >= log2(1.5+1)))
+  ) %>% mutate(num_events=num_del+num_amp)
+
+adult_integer_values_ccle_name <- adult_for_counting %>% 
+  group_by(Type) %>%
+  mutate(med=median(num_events)) %>%
+  arrange(med, Type, num_events) %>% 
+  ungroup() %>% mutate(i=as.integer(row.names(.))+0.5) %$% 
+  setNames(i, DepMap_ID)
+
+adult_cell_line_order <- names(adult_integer_values_ccle_name)
+
+adult_for_counting %<>% mutate(pos=adult_integer_values_ccle_name[as.character(DepMap_ID)]) %>% 
+  mutate(DepMap_ID=factor(DepMap_ID, levels=adult_cell_line_order))
+```
+
+```{r}
+adult_final_cn_seg_calls_annotated <- adult_final_cn_seg_calls %>% mutate(DepMap_ID=factor(DepMap_ID, levels=adult_cell_line_order))
+
+adult_for_plotting_cn <- adult_final_cn_seg_calls_annotated %>% 
+  mutate(`log2(CN ratio)`=ifelse(log2(Segment_Mean) > 1, 1, ifelse(log2(Segment_Mean) < -1, -1, log2(Segment_Mean))))
+```
+
+```{r}
+adult_cn_plot <- ggplot(adult_for_plotting_cn %>% filter(Chromosome %in% paste0(seq(1,22,1))), 
+       aes(xmin=Start_continuous, xmax=End_continuous, ymin=as.integer(DepMap_ID), ymax=as.integer(DepMap_ID)+1, fill=`log2(CN ratio)`)) +
+  annotate('rect', xmin=cutoffs_chr_for_plotting['chr1'], 
+           xmax=cutoffs_chr_for_plotting['chrX'], ymin = 1, ymax = max(adult_integer_values_ccle_name)+0.5, fill='grey') + 
+  geom_rect() +
+  scale_x_continuous(breaks=cutoffs_chr_for_plotting[paste0('chr', seq(1,22,1))], 
+                     labels=names(cutoffs_chr_for_plotting[paste0('chr', seq(1,22,1))]), expand = c(0,0)) +
+  scale_y_continuous(breaks=adult_integer_values_ccle_name, labels=gsub('_.*', '', names(adult_integer_values_ccle_name)), expand = c(0, 0)) +
+  scale_fill_gradient2(high='red', low='blue', mid='white', midpoint=0, 
+    guide = guide_colorbar(frame.colour = "black", ticks.colour = "black", title.position = "left",
+      title.hjust = 0.5, title.vjust = 0.5, title.theme = element_text(angle = 90), title = 'log2 relative CN')
+  ) + 
+  theme_minimal() +
+  theme(
+    text = element_text(size=12),
+    axis.title = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid = element_blank(),
+    plot.margin=unit(c(.2,0,.1,1),"cm"),
+    legend.position = 'left'
+  )
+
+adult_p2 <- ggplot(adult_for_counting, aes(ymin=pos - 0.4, ymax=pos + 0.4, xmin=0, xmax=num_events, fill=`Type`)) +
+  geom_rect(color='transparent') +
+  scale_fill_manual(values=complete_type_colors) +
+  scale_x_continuous(expand = c(.03,0)) +
+  scale_y_continuous(expand = c(0,0)) +
+  theme_minimal() +
+  theme(
+    text = element_text(size=12),
+    axis.title = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    plot.margin=unit(c(.2,1,.1,0),"cm"),
+    legend.position = 'none'
+  )
+```
+
+
+```{r}
+adult_abbreviations <- c(setNames(complete_type_colors %>% 
+                                    names(.) %>% 
+                                    .[which(!(. %in% names(abbreviations)))], complete_type_colors %>% names(.) %>% 
+                                    .[which(!(. %in% names(abbreviations)))]))
+
+# Add the annotations. First have to determine the ymin and ymax for each type and then mapp it to the colors
+adult_annotations_to_add <- adult_for_plotting_cn %>% 
+  filter(Chromosome %in% paste0(seq(1,22,1))) %>%
+  distinct(Type, DepMap_ID) %>%
+  mutate(y=adult_integer_values_ccle_name[as.character(DepMap_ID)]) %>%
+  group_by(Type) %>%
+  dplyr::summarise(ymin=min(y), ymax=max(y), ymean=mean(y)) %>%
+  mutate(color=complete_type_colors[as.character(Type)], abbrev=adult_abbreviations[as.character(Type)])
+
+for (r in 1:nrow(adult_annotations_to_add)) {
+  annotation_meta_data <- adult_annotations_to_add[r,] %>% as.list()
+  adult_cn_plot <- adult_cn_plot + annotate(
+    'rect', xmin = -100, xmax = 0,
+    ymin = annotation_meta_data$ymin-0.5, ymax = annotation_meta_data$ymax+0.5,
+    fill = annotation_meta_data$color, color = 'transparent'
+  )
+}
+
+adult_bottom_extension_val <- -18
+adult_axis_size <- 4
+
+# Chromosome annotations
+for (chr in seq(1,22)) {
+  start = cutoffs_chr_for_plotting[paste0('chr', chr)]
+
+  end=NULL
+  if (chr == 22) {
+    end = cutoffs_chr_for_plotting[paste0('chrX')]
+  } else {
+    end = cutoffs_chr_for_plotting[paste0('chr', chr + 1)]
+  }
+  mid <- mean(c(start, end))
+  
+  color = 'grey'
+  if (chr %% 2 == 0) {
+    color = '#6d6d6d'
+  }
+  
+  adult_cn_plot <- adult_cn_plot + 
+    annotate(
+    'rect', xmin = start, xmax = end,
+    ymin = adult_bottom_extension_val, ymax = 1,
+    fill = color, color = color
+  ) + annotate('text', x=mid, y=(adult_bottom_extension_val+1)/2, label=paste0(chr), size=2, angle=0, hjust=0.5, vjust=0.5)
+  
+  # To make the plots exactly the same dimensions
+  adult_p2 <- adult_p2 + annotate('rect', xmin=start, xmax=end, ymin=adult_bottom_extension_val, ymax=1, fill='white', color='white')
+}
+
+# Create axis for right side plot
+# Take the max and split into 5 sections (including 0)
+max_value <- 1000*(max(adult_for_counting$num_events) %/% 1000 + as.logical(max(adult_for_counting$num_events) %% 1000))
+if (max_value < max(adult_for_counting$num_events)) {
+  max_value <- max_value + 1000
+}
+points_on_axis_to_add <- c(0, max_value/4, max_value/2, max_value*3/4, max_value)
+adult_p2 <- adult_p2 +
+  # annotate('rect', xmin = 0, xmax=max_value, ymin = 0, ymax = adult_axis_size, fill='black') +
+  annotate('rect', xmin = max_value+1, xmax=max_value+100, ymin = 0, ymax = 0.1, fill='white') # Buffer so axis not cutoff
+for (r in points_on_axis_to_add) {
+  xmax_val <- min(r + 0.5, max(points_on_axis_to_add))
+  if (xmax_val == 0) {
+    xmax_val=1
+  }
+  xmin_val <- max(0, xmax_val-1)
+  xmin_val <- xmin_val + 1
+  xmax_val <- xmax_val + 1
+  adult_p2 <- adult_p2 + 
+    # Draw the ticks
+    annotate('rect', xmin = xmin_val, xmax = xmax_val, ymin = 0, ymax=adult_bottom_extension_val, color='black') + 
+    # Draw the numbers
+    annotate('text', x = r-100, y = (adult_bottom_extension_val)+0.25, hjust = 1, vjust = 0, color='black', angle = 0, label=r, size=2)
+}
+```
+
+```{r include=TRUE}
+# Arrange the plots
+adult_grid1 <- grid.arrange(adult_cn_plot, adult_p2, ncol = 2, widths=c(3,1))
+
+saveRDS(adult_grid1, file = paste0('figures/copy_number/adult_cn_across_lines', version_to_use, '.rds'))
+ggsave(adult_grid1, filename = paste0('figures/copy_number/adult_cn_across_lines',version_to_use,'.pdf'), width = 24, height = 16, units = 'cm', device = 'pdf', useDingbats=FALSE)
+```
+
+
+### Pediatric tumor copy number alteration plot
+
+```{r}
+gn_level_for_pediatrics <- gene_cn[intersect(pediatric_lines$DepMap_ID, row.names(gene_cn)),]
+
+genes_to_use <- apply(gn_level_for_pediatrics, 2, FUN = function(x) length(which(is.na(x)))) %>% .[which(. == 0)]
+
+for_counting <- gn_level_for_pediatrics[,names(genes_to_use)] %>% as.data.frame() %>%
+  mutate(DepMap_ID=row.names(.)) %>%
+  gather(variable, value, -DepMap_ID) %>% 
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type), by='DepMap_ID') %>%
+  group_by(Type, DepMap_ID) %>%
+  dplyr::summarise(
+    count=n(),
+    num_del=length(which((value) <= log2(0.5+1))),
+    num_amp=length(which((value) >= log2(1.5+1)))
+  ) %>% mutate(num_events=num_del+num_amp)
+
+integer_values_ccle_name <- for_counting %>%
+  group_by(Type) %>%
+  mutate(med=median(num_events)) %>%
+  arrange(med, Type, num_events) %>% 
+  ungroup() %>% 
+  mutate(i=as.integer(row.names(.))+0.5) %$% setNames(i, DepMap_ID)
+cell_line_order <- names(integer_values_ccle_name)
+
+for_counting %<>% mutate(pos=integer_values_ccle_name[as.character(DepMap_ID)]) %>% mutate(DepMap_ID=factor(DepMap_ID, levels=cell_line_order))
+```
+
+```{r}
+# Mutate segmented calls 
+final_cn_seg_calls <- segment_calls_all %>%
+  filter(DepMap_ID %in% names(integer_values_ccle_name)) %>%
+  mutate(Type=factor(Type, levels=pediatric_types))
+
+final_cn_seg_calls_annotated <- final_cn_seg_calls %>% mutate(DepMap_ID=factor(DepMap_ID, levels=cell_line_order))
+
+for_plotting_cn <- final_cn_seg_calls_annotated %>% 
+  mutate(`log2(CN ratio)`=ifelse(log2(Segment_Mean) > 1, 1, ifelse(log2(Segment_Mean) < -1, -1, log2(Segment_Mean))))
+```
+
+```{r}
+cn_plot <- ggplot(for_plotting_cn %>% filter(Chromosome %in% paste0(seq(1,22,1))), 
+       aes(xmin=Start_continuous, xmax=End_continuous, ymin=as.integer(DepMap_ID), ymax=as.integer(DepMap_ID)+1, fill=`log2(CN ratio)`)) +
+  annotate('rect', xmin=cutoffs_chr_for_plotting['chr1'], xmax=cutoffs_chr_for_plotting['chrX'], 
+           ymin = 1, ymax = max(integer_values_ccle_name)+0.5, fill='grey') + 
+  geom_rect() +
+  scale_x_continuous(breaks=cutoffs_chr_for_plotting[paste0('chr', seq(1,22,1))], 
+                     labels=names(cutoffs_chr_for_plotting[paste0('chr', seq(1,22,1))]), expand = c(0,0)) +
+  scale_y_continuous(breaks=integer_values_ccle_name, labels=gsub('_.*', '', names(integer_values_ccle_name)), expand = c(0, 0)) +
+  scale_fill_gradient2(high='red', low='blue', mid='white', midpoint=0, 
+    guide = guide_colorbar(frame.colour = "black", ticks.colour = "black", title.position = "left",
+      title.hjust = 0.5, title.vjust = 0.5, title.theme = element_text(angle = 90), title = 'log2 relative CN')
+  ) + 
+  theme_minimal() +
+  theme(
+    text = element_text(size=12),
+    axis.title = element_blank(),
+  #   # axis.text.y = element_text(color = colors_by_cell_line[names(integer_values_ccle_name)]),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    # axis.text.x=element_text(hjust = 1, angle=90, vjust=0.5),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid = element_blank(),
+    plot.margin=unit(c(.2,0,.1,1),"cm"),
+    legend.position = 'left'
+  )
+
+p2 <- ggplot(for_counting, aes(ymin=pos - 0.4, ymax=pos + 0.4, xmin=0, xmax=num_events, fill=`Type`)) +
+  geom_rect(color='transparent') +
+  scale_fill_manual(values=color_for_subtypes_vector) +
+  scale_x_continuous(expand = c(.03,0)) +
+  scale_y_continuous(expand = c(0,0)) +
+  theme_minimal() +
+  theme(
+    text = element_text(size=12),
+    axis.title = element_blank(),
+  #   # axis.text.y = element_text(color = colors_by_cell_line[names(integer_values_ccle_name)]), 
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    # axis.text.x=element_text(hjust = 1, angle=90, vjust=0.5),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    plot.margin=unit(c(.2,1,.1,0),"cm"),
+    legend.position = 'none'
+  )
+```
+
+
+```{r}
+# Add the annotations. First have to determine the ymin and ymax for each type and then map it to the colors.
+annotations_to_add <- for_plotting_cn %>% 
+  distinct(Type, DepMap_ID) %>%
+  mutate(y=integer_values_ccle_name[as.character(DepMap_ID)]) %>%
+  group_by(Type) %>%
+  dplyr::summarise(ymin=min(y), ymax=max(y), ymean=mean(y)) %>%
+  mutate(color=color_for_subtypes_vector[as.character(Type)], abbrev=abbreviations[as.character(Type)])
+
+for (r in 1:nrow(annotations_to_add)) {
+  annotation_meta_data <- annotations_to_add[r,] %>% as.list()
+  cn_plot <- cn_plot + annotate(
+    'rect', xmin = -100, xmax = 0,
+    ymin = annotation_meta_data$ymin-0.5, ymax = annotation_meta_data$ymax+0.5,
+    fill = annotation_meta_data$color, color = 'transparent'
+  )
+}
+
+# Add text after the fact
+for (r in 1:nrow(annotations_to_add)) {
+  annotation_meta_data <- annotations_to_add[r,] %>% as.list()
+  cn_plot <- cn_plot + 
+    annotate('text', x=-50, y=annotation_meta_data$ymean, label=annotation_meta_data$abbrev, size=3, angle=90, hjust=0.5, vjust=0.5)
+}
+
+# Make should be proportional to amount of pediatric lines vs. adult lines
+ratio_of_samples_sizes <- (length(integer_values_ccle_name)/length(adult_integer_values_ccle_name))
+bottom_extension_val <- (adult_bottom_extension_val) * ratio_of_samples_sizes + 1
+axis_size <- adult_axis_size * ratio_of_samples_sizes
+
+# Chromosome annotations
+for (chr in seq(1,22)) {
+  start = cutoffs_chr_for_plotting[paste0('chr', chr)]
+
+  end=NULL
+  if (chr == 22) {
+    end = cutoffs_chr_for_plotting[paste0('chrX')]
+  } else {
+    end = cutoffs_chr_for_plotting[paste0('chr', chr + 1)]
+  }
+  mid <- mean(c(start, end))
+  
+  color = 'grey'
+  if (chr %% 2 == 0) {
+    color = '#6d6d6d'
+  }
+  
+  cn_plot <- cn_plot + 
+    annotate(
+    'rect', xmin = start, xmax = end,
+    ymin = bottom_extension_val, ymax = 1,
+    fill = color, color = color
+  ) + annotate('text', x=mid, y=(bottom_extension_val+1)/2, label=paste0(chr), size=2, angle=0, hjust=0.5, vjust=0.5)
+  
+  # To make the plots exactly the same dimensions
+  p2 <- p2 + annotate('rect', xmin=start, xmax=end, ymin=bottom_extension_val, ymax=1, fill='white', color='white')
+}
+
+# Create axis for right side plot
+# Take the max and split into 5 sections (including 0)
+p2 <- p2 +
+  annotate('rect', xmin = max_value+1, xmax=max_value+100, ymin = 0, ymax = 0.1, fill='white') # Buffer so axis not cutoff
+for (r in points_on_axis_to_add) {
+  xmax_val <- min(r + 0.5, max(points_on_axis_to_add))
+  if (xmax_val == 0) {
+    xmax_val=1
+  }
+  xmin_val <- max(0, xmax_val-1)
+  xmin_val <- xmin_val + 1
+  xmax_val <- xmax_val + 1
+  p2 <- p2 + 
+    # Draw the ticks
+    annotate('rect', xmin = xmin_val, xmax = xmax_val, ymin = 0, ymax=bottom_extension_val, color='black') + 
+    # Draw the numbers
+    annotate('text', x = r-100, y = (bottom_extension_val)+0.25*ratio_of_samples_sizes, 
+             hjust = 1, vjust = 0, color='black', angle = 0, label=r, size=2)
+}
+
+```
+
+
+```{r include=TRUE}
+grid1 <- grid.arrange(cn_plot, p2, ncol=2, widths=c(3,1))
+saveRDS(grid1, file = paste0('figures/copy_number/pediatric_cn_across_lines', version_to_use, '.rds'))
+ggsave(grid1, filename = paste0('figures/copy_number/pediatric_cn_across_lines',version_to_use,'.pdf'), 
+       width = 24, height = 16, units = 'cm', device = 'pdf', useDingbats=FALSE)
+```
+
+
+### Gene fusions per cell line (proxy for structural events)
+
+```{r}
+# For each cell line, calculate number of CNAs
+by_cl_fusion_counts <- fusions %>% 
+  dplyr::group_by(DepMap_ID) %>% 
+  dplyr::summarise(counts = n())
+```
+
+```{r}
+# Merge with lineage and then plot
+data_for_fusion_totals_counts <- left_join(by_cl_fusion_counts, mf %>% dplyr::select(DepMap_ID, Type, PvA), by = "DepMap_ID") %>%
+  group_by(Type) %>%
+  dplyr::mutate(in_lineage_rank=rank(counts)/max(n(),2)) %>%
+  dplyr::mutate(lineage_med=median(counts)) %>%
+  ungroup() %>%
+  arrange(lineage_med, in_lineage_rank)
+
+data_for_fusion_totals_counts %<>% mutate(Group=ifelse(PvA=='Pediatric', Type, 'Adult'))
+
+type_rank <- data_for_fusion_totals_counts %>% 
+  group_by(Type) %>% 
+  dplyr::summarise(med=median(counts)) %$%
+  setNames(med, Type) %>% .[order(.)] %>% names()
+
+data_for_fusion_totals_counts %<>% mutate(Type=factor(Type, levels=type_rank)) %<>%
+  mutate(plot_rank=in_lineage_rank + as.integer(Type)) %>% 
+  group_by(Type) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(Type,' (n=',n,')')) %>%
+  ungroup()
+
+cl_order <- data_for_fusion_totals_counts %$% setNames(plot_rank, DepMap_ID) %>% .[order(.)]
+
+# Get coordindates for tick marks
+labels_coords <- data.frame(DepMap_ID=names(cl_order), val=cl_order) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type) %>% distinct(), by='DepMap_ID') %>%
+  left_join(., data_for_fusion_totals_counts %>% dplyr::select(DepMap_ID, label) %>% distinct(), by='DepMap_ID') %>%
+  group_by(label) %>%
+  dplyr::summarise(v=ifelse(max(val)==min(val), val, (max(val)+floor(min(val)))/2)) %$%
+  setNames(v, label)
+
+fusion_counts_for_plot <- data_for_fusion_totals_counts %>%
+  mutate(CL_for_plot=factor(DepMap_ID, levels=names(cl_order)))
+
+# Add the median line segment
+med_segs <- fusion_counts_for_plot %>% 
+  group_by(Type) %>%
+  dplyr::summarise(
+    x = floor(min(plot_rank))+0.25, xend=ceiling(max(plot_rank))-0.25,
+    y = median(counts)
+  ) %>% 
+  mutate(x=ifelse(x > xend, x - 1, x)) %>%
+  arrange(x)
+
+# color only pediatric samples
+fusion_plot <- ggplot(fusion_counts_for_plot, aes(plot_rank, (counts), color=Group)) +
+  geom_point(aes(fill=Group), pch=21, alpha=0.75, size=3) +
+  geom_segment(data=med_segs, aes(x=x, xend=xend, y=y, yend=y, group=Type), color='black', size=0.5) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey')) +
+  theme_bw() + 
+  ylab('Number of unique\ngene fusions') + xlab('') +
+  scale_x_continuous(breaks=labels_coords, labels=names(labels_coords)) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+```
+
+```{r include=TRUE}
+fusion_plot
+
+saveRDS(fusion_plot, file = paste0('figures/copy_number/fusions_by_lineage_plot', version_to_use, '.rds'))
+ggsave(fusion_plot, filename = paste0('figures/copy_number/fusions_by_lineage_plot', version_to_use, '.pdf'), 
+       width=20, height=14, units='cm', useDingbats=FALSE)
+```
+
+
+### Gene fusions in fibroblasts, pediatric tumor and adult tumor cell lines
+
+```{r include=TRUE}
+### Plot cmparison of peds v adults
+fusion_counts_for_plot %<>% mutate(PvA=ifelse(Type=="Fibroblast","Fibroblast",PvA)) %>% filter(Type!="Immortalized")
+fusion_counts_for_plot$PvA <- factor(fusion_counts_for_plot$PvA, levels = c("Fibroblast", "Pediatric", "Adult"))
+fusion_counts_for_plot %<>% group_by(PvA) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(PvA,' (n=',n,')')) %>%
+  ungroup()
+fusion_plot <- ggplot(fusion_counts_for_plot, aes(x = PvA, y = (counts), fill=PvA, color=PvA)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  scale_fill_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='black')) +
+  scale_color_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='black')) +
+  theme_bw() +
+  xlab('') + ylab('Number of unique\ngene fusions') +
+  scale_x_discrete(labels=setNames(unique(fusion_counts_for_plot$label), unique(fusion_counts_for_plot$PvA))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means(comparisons = list(c("Pediatric","Fibroblast"), c("Pediatric","Adult"), c("Fibroblast","Adult")), label.y = c(210, 250, 275)) 
+#  stat_compare_means(method = "anova", label.y = 30)     # Add global Anova p-value
+
+fusion_plot
+saveRDS(fusion_plot, file = paste0('figures/copy_number/peds_v_adult_fusion_plot', version_to_use, '.rds'))
+ggsave(fusion_plot, filename = paste0('figures/copy_number/peds_v_adult_fusion_plot', version_to_use, '.pdf'), height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+
+### Gene fusions compared to number of dependencies per cell line
+
+```{r include=TRUE}
+# combining dependency and fusion #
+# Simple scatter plot, coloring the pediatric samples
+for_plot_count_fusion_deps <- plyr::join(fusion_counts_for_plot, counts_prob_dep_df[,1:3], by="DepMap_ID") %>%
+  arrange(Group)
+
+fusions_vs_deps <- ggplot(for_plot_count_fusion_deps %>% dplyr::filter(!is.na(total_deps_by_cl)), 
+                       aes(total_deps_by_cl, (counts), fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey')) +
+  theme_bw() +
+  xlab('Number of dependencies') + ylab('Number of unique\ngene fusions') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = 'y ~ x')
+
+fusions_vs_deps
+saveRDS(fusions_vs_deps, file = paste0('figures/copy_number/deps_v_fusions_across_lineages_', version_to_use, '.rds'))
+ggsave(fusions_vs_deps, filename = paste0('figures/copy_number/deps_v_fusions_across_lineages_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+fusions_vs_deps <- ggplot(for_plot_count_fusion_deps %>% dplyr::filter(!is.na(total_deps_by_cl_lrt_only)), 
+                       aes(total_deps_by_cl_lrt_only, (counts), fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey')) +
+  theme_bw() +
+  xlab('Number of selective dependencies') + ylab('Number of unique\ngene fusions') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none', 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = 'y ~ x')
+
+fusions_vs_deps
+saveRDS(fusions_vs_deps, file = paste0('figures/copy_number/depsLRT_v_fusions_across_lineages_', version_to_use, '.rds'))
+ggsave(fusions_vs_deps, filename = paste0('figures/copy_number/depsLRT_v_fusions_across_lineages_', version_to_use, '.pdf'), height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+
+
+## Session Info
+
+```{r session_info, include=TRUE, echo=TRUE, results='markup'}
+devtools::session_info()
+```
+
+```{r include=TRUE}
+as.data.frame(`Dataset Used`) %>% datatable(options=list(scrollX=T))
+```

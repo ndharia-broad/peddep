@@ -1,0 +1,751 @@
+---
+title: "Selective and Enriched Dependency Figures With/Without CERES"
+author: "Neekesh Dharia & Guillaume Kugener"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include=FALSE, message=FALSE, warning = FALSE)
+source('setup.R')
+source('load_data.R')
+```
+
+
+# Generated using: `r toupper(version_to_use)`
+
+
+```{r load_needed_datasets}
+# This script uses the following datasets:
+mf <- mf
+gene_effect <- load_gene_effect()
+gene_dependency <- load_gene_dependency()
+gene_cn <- load_gene_cn()
+gene_lrt_table <- load_lrt_table()
+
+nonceres_gene_effect <- fread("~/Downloads/public20Q1_naive_gene_effect.csv") 
+nonceres_gene_effect <- as.matrix(nonceres_gene_effect %>% select(-DepMap_ID)) %>% set_rownames(., nonceres_gene_effect$DepMap_ID)
+nonceres_gene_effect <- nonceres_gene_effect[rownames(gene_effect),]
+
+nonceres_gene_dependency <- fread("~/Downloads/public20q1_naive_gene_dependency.csv") 
+nonceres_gene_dependency <- as.matrix(nonceres_gene_dependency %>% select(-DepMap_ID)) %>% set_rownames(., nonceres_gene_dependency$DepMap_ID)
+nonceres_gene_dependency <- nonceres_gene_dependency[rownames(gene_effect),]
+
+if(!dir.exists('figures')) { dir.create('figures') }
+if(!dir.exists('figures/dependency')) { dir.create('figures/dependency') }
+```
+
+```{r}
+cl = detectCores()
+if(!file.exists("~/Downloads/public20q1_naive_gene_effect_lrt_table.csv")) # If file does not exist, calculate LRTs for the current dataset defined above.
+{
+  cat("Calculating non-CERES LRT values... This can take a few minutes to >1 hour depending on the number of cores for parallel processing.\n")
+  
+  median_nonceres_gene_effect <- apply(nonceres_gene_effect, 2, median, na.rm = T)
+  mean_nonceres_gene_effect <- apply(nonceres_gene_effect, 2, mean, na.rm = T)
+  
+  # Run of the LRT gene calculations
+  lrt_genes_data_nonceres <- pbapply(nonceres_gene_effect, 2, function(x) {
+    source('R/normLRT_test.R')
+    g = colnames(x)
+    invisible(capture.output(lrt_val <- suppressMessages(suppressWarnings(normLRT_test(x)))))
+    names(lrt_val) <- g
+    return(lrt_val)
+  }, cl = cl)
+  
+  lrt_genes_data_nonceres <- data.frame(gene=names(lrt_genes_data_nonceres), lrt_genes_data_nonceres, stringsAsFactors = F) %>%
+    dplyr::rename(lrt = lrt_genes_data_nonceres) %>%
+    arrange(-lrt)
+  
+  # As a rule, negative skewness indicates that the mean of the data values is less than the median
+  lrt_genes_data_nonceres %<>%
+    dplyr::mutate(median=median_nonceres_gene_effect[gene], mean=mean_nonceres_gene_effect[gene]) %>%
+    dplyr::mutate(skewed_left=mean < median)
+  
+  fwrite(lrt_genes_data_nonceres, "~/Downloads/public20q1_naive_gene_effect_lrt_table.csv")
+} else
+{
+  cat("Loading previously calculated non-CERES LRT values...\n")
+  lrt_genes_data_nonceres <- fread("~/Downloads/public20q1_naive_gene_effect_lrt_table.csv")
+}
+
+```
+
+The table below highlights all of the cell lines that are included in the analyses and the types that they are annotated as:
+
+```{r}
+cell_lines_included_table <- rbind(
+  data.frame(name=row.names(nonceres_gene_dependency), stringsAsFactors = F) %>% mutate(Source='Dependency'),
+  data.frame(name=row.names(gene_cn), stringsAsFactors = F) %>% mutate(Source='Gene CN')
+) %>% mutate(value=1) %>% mutate(DepMap_ID=name) %>%
+  spread(., Source, value) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, CCLE_name, Type), by='DepMap_ID') %>%
+  dplyr::select(DepMap_ID, CCLE_name, everything())
+```
+
+```{r include=TRUE} 
+cell_lines_included_table %>% datatable(options=list(scrollX=T))
+```
+
+# Overview
+
+* Comparing LRT genes between ceres and non-ceres gene effects.
+
+## Comparing LRT dependencies
+
+```{r include=TRUE}
+hist(lrt_genes_data_nonceres$lrt, 1000)
+hist(gene_lrt_table$lrt, 1000)
+
+dim(gene_lrt_table %>% filter(lrt > 100, skewed_left == TRUE))[1]
+dim(lrt_genes_data_nonceres %>% filter(lrt > 250, skewed_left == TRUE))[1]
+
+lrt_genes <- gene_lrt_table %>% filter((lrt) > 100, skewed_left) %$%
+  gene
+
+achilles_non_essentials <- colSums(gene_dependency >= 0.5, na.rm = T)
+achilles_non_essentials <- names(achilles_non_essentials[achilles_non_essentials == 0])
+
+lrt_genes_ceres <- lrt_genes
+lrt_genes_ceres <- lrt_genes_ceres[!(lrt_genes_ceres %in% c(achilles_non_essentials, load_achilles_common_essentials()$gene))]
+
+lrt_genes_nonceres <- lrt_genes_data_nonceres %>% filter((lrt) > 250, skewed_left) %$%
+  gene
+
+nonceres_non_essentials <- colSums(nonceres_gene_dependency >= 0.5, na.rm = T)
+nonceres_non_essentials <- names(nonceres_non_essentials[nonceres_non_essentials == 0])
+# Identify pan-dependent genes as those for whom 90% of cell lines rank the gene above a given dependency cutoff. The cutoff is determined from the central minimum in a histogram of gene ranks in their 90th percentile least dependent line
+nonceres_gene_effect_rank <- t(colRanks(t(nonceres_gene_effect)))
+rownames(nonceres_gene_effect_rank) <- colnames(nonceres_gene_effect)
+colnames(nonceres_gene_effect_rank) <- rownames(nonceres_gene_effect)
+nonceres_gene_effect_rank <- t(nonceres_gene_effect_rank) / colMaxs(nonceres_gene_effect_rank, na.rm=T)
+nonceres_common_essential_score <- apply(nonceres_gene_effect_rank, 2, quantile, probs = 0.90, na.rm = T)
+d <- density(nonceres_common_essential_score)
+cutoff <- optimize(approxfun(d$x,d$y),interval=c(0.1, 0.5))$minimum
+
+nonceres_common_essentials <- names(which(nonceres_common_essential_score < cutoff))
+
+lrt_genes_nonceres <- lrt_genes_nonceres[!(lrt_genes_nonceres %in% c(nonceres_non_essentials, nonceres_common_essentials))]
+
+lrt_compare <- full_join(gene_lrt_table, lrt_genes_data_nonceres, by = "gene")
+
+ggplot(lrt_compare %>% filter(!is.na(lrt.x), !is.na(lrt.y)), aes(x=lrt.x, y=lrt.y, label=gene)) + 
+  geom_point() + 
+  geom_hline(yintercept = 250) + 
+  geom_vline(xintercept = 100) + 
+  theme_bw() +
+  xlab('CERES LRT') + ylab('Naive LRT') +
+  theme_Publication() +
+  theme(legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line.x = element_blank(),
+        panel.spacing = unit(1, "lines"), strip.background=element_blank()) 
+
+```
+
+
+## Comparing dependency rates
+
+```{r include=TRUE}
+gene_dependency_adult <- gene_dependency[rownames(gene_dependency) %in% mf$DepMap_ID[mf$PvA == "Adult"],]
+gene_dependency_peds <- gene_dependency[rownames(gene_dependency) %in% mf$DepMap_ID[mf$PvA == "Pediatric"],]
+gene_effect_adult <- gene_effect[rownames(gene_effect) %in% mf$DepMap_ID[mf$PvA == "Adult"],]
+gene_effect_peds <- gene_effect[rownames(gene_effect) %in% mf$DepMap_ID[mf$PvA == "Pediatric"],]
+
+# Ratio of cell lines dependent on selective dependecies
+adult_dep_rate <- colSums(gene_dependency_adult[, ]>0.5, na.rm=T) / colSums(gene_dependency_adult[, ]>=0, na.rm=T)
+pediatric_dep_rate <- colSums(gene_dependency_peds[, ]>0.5, na.rm=T) / colSums(gene_dependency_peds[, ]>=0, na.rm=T)
+
+diff_dep_rate <- pediatric_dep_rate - adult_dep_rate
+
+diff_dep_rate_pvalue <- diff_dep_rate
+diff_dep_rate_estimate <- diff_dep_rate
+
+for (gene in names(adult_dep_rate))
+{
+  gene <- as.character(gene)
+  test1 <- fisher.test(matrix(c(sum(gene_dependency_adult[, gene]>0.5, na.rm=T),
+                                sum(gene_dependency_adult[, gene]>=0, na.rm=T), 
+                                sum(gene_dependency_peds[, gene]>0.5, na.rm=T),
+                                sum(gene_dependency_peds[, gene]>=0, na.rm=T)), 
+                              nrow = 2))
+  diff_dep_rate_pvalue[gene] <- test1$p.value
+  diff_dep_rate_estimate[gene] <- test1$estimate
+
+}
+diff_dep_rate_pvalue_adj <- p.adjust(diff_dep_rate_pvalue, method = "BH")
+```
+
+```{r}
+gene_cn_mean <- diff_dep_rate
+gene_cn_sd <- diff_dep_rate
+
+i <- 1
+for (gene in names(adult_dep_rate))
+{
+  gene_for_cn <- grepl(gsub(".* ", "", gene), colnames(gene_cn))
+  i <- i+1
+  if (sum(gene_for_cn) == 1) {
+    gene_cn_mean[gene] <- mean(gene_cn[rownames(gene_cn) %in% rownames(gene_effect_peds),
+                                       gene_for_cn], na.rm = T) -
+      mean(gene_cn[rownames(gene_cn) %in% rownames(gene_effect_adult),
+                   gene_for_cn], na.rm = T)
+    gene_cn_sd[gene] <- sd(gene_cn[rownames(gene_cn) %in% rownames(gene_effect_peds),
+                                   gene_for_cn], na.rm = T) -
+      sd(gene_cn[rownames(gene_cn) %in% rownames(gene_effect_adult),
+                 gene_for_cn], na.rm = T)
+  } else
+  {
+    gene_cn_mean[gene] <- NA
+    gene_cn_sd[gene] <- NA
+  }
+}
+```
+
+```{r include=TRUE}
+nonceres_gene_dependency_adult <- nonceres_gene_dependency[rownames(nonceres_gene_dependency) %in% mf$DepMap_ID[mf$PvA == "Adult"],]
+nonceres_gene_dependency_peds <- nonceres_gene_dependency[rownames(nonceres_gene_dependency) %in% mf$DepMap_ID[mf$PvA == "Pediatric"],]
+nonceres_gene_effect_adult <- nonceres_gene_effect[rownames(nonceres_gene_effect) %in% mf$DepMap_ID[mf$PvA == "Adult"],]
+nonceres_gene_effect_peds <- nonceres_gene_effect[rownames(nonceres_gene_effect) %in% mf$DepMap_ID[mf$PvA == "Pediatric"],]
+
+# Ratio of cell lines dependent on selective dependecies
+nonceres_adult_dep_rate <- colSums(nonceres_gene_dependency_adult[, ]>0.5, na.rm=T) / 
+  colSums(nonceres_gene_dependency_adult[, ]>=0, na.rm=T)
+nonceres_pediatric_dep_rate <- colSums(nonceres_gene_dependency_peds[, ]>0.5, na.rm=T) /
+  colSums(nonceres_gene_dependency_peds[, ]>=0, na.rm=T)
+
+nonceres_diff_dep_rate <- nonceres_pediatric_dep_rate - nonceres_adult_dep_rate
+
+nonceres_diff_dep_rate_pvalue <- nonceres_diff_dep_rate
+nonceres_diff_dep_rate_estimate <- nonceres_diff_dep_rate
+
+for (gene in names(nonceres_adult_dep_rate))
+{
+  gene <- as.character(gene)
+  test1 <- fisher.test(matrix(c(sum(nonceres_gene_dependency_adult[, gene]>0.5, na.rm=T),
+                                sum(nonceres_gene_dependency_adult[, gene]>=0, na.rm=T), 
+                                sum(nonceres_gene_dependency_peds[, gene]>0.5, na.rm=T),
+                                sum(nonceres_gene_dependency_peds[, gene]>=0, na.rm=T)), 
+                              nrow = 2))
+  nonceres_diff_dep_rate_pvalue[gene] <- test1$p.value
+  nonceres_diff_dep_rate_estimate[gene] <- test1$estimate
+}
+nonceres_diff_dep_rate_pvalue_adj <- p.adjust(nonceres_diff_dep_rate_pvalue, method = "BH")
+```
+
+
+```{r}
+diff_dep_rate_pvalue_adj_compare <- inner_join(as.data.frame(cbind(names(nonceres_diff_dep_rate_pvalue_adj), 
+                                                               nonceres_diff_dep_rate_pvalue_adj, nonceres_diff_dep_rate_estimate), 
+                                                             stringsAsFactors = F) %>% 
+                                                 set_colnames(., c("gene", "naive_dep_rate_pval_adj", "naive_dep_rate_estimate")),
+                                               as.data.frame(cbind(names(diff_dep_rate_pvalue_adj), 
+                                                               diff_dep_rate_pvalue_adj, diff_dep_rate_estimate), 
+                                                             stringsAsFactors = F) %>% 
+                                                 set_colnames(., c("gene", "ceres_dep_rate_pval_adj", "ceres_dep_rate_estimate")),
+                                               by = "gene") %>%
+  dplyr::mutate(naive_dep_rate_pval_adj = as.numeric(naive_dep_rate_pval_adj),
+                ceres_dep_rate_pval_adj = as.numeric(ceres_dep_rate_pval_adj),
+                naive_dep_rate_estiamte = as.numeric(naive_dep_rate_estimate),
+                ceres_dep_rate_estimate = as.numeric(ceres_dep_rate_estimate)) %>%
+  dplyr::mutate(cn_mean = gene_cn_mean[gene],
+                cn_sd = gene_cn_sd[gene])
+
+diff_dep_rate_compare <- inner_join(as.data.frame(cbind(names(nonceres_diff_dep_rate), 
+                                                               nonceres_diff_dep_rate), 
+                                                             stringsAsFactors = F) %>% 
+                                                 set_colnames(., c("gene", "naive_diff_dep_rate")),
+                                               as.data.frame(cbind(names(diff_dep_rate), 
+                                                               diff_dep_rate), 
+                                                             stringsAsFactors = F) %>% 
+                                                 set_colnames(., c("gene", "ceres_diff_dep_rate")),
+                                               by = "gene") %>%
+  dplyr::mutate(naive_diff_dep_rate = as.numeric(naive_diff_dep_rate),
+                ceres_diff_dep_rate = as.numeric(ceres_diff_dep_rate)) %>%
+  dplyr::mutate(cn_mean = gene_cn_mean[gene],
+                cn_sd = gene_cn_sd[gene])
+
+
+p <- ggplot(diff_dep_rate_pvalue_adj_compare %>%
+              filter(naive_dep_rate_estiamte < 1 & ceres_dep_rate_estimate < 1), 
+            aes(x = -log10(ceres_dep_rate_pval_adj),
+                y = -log10(naive_dep_rate_pval_adj),
+                label = gene, 
+                color = cn_mean)) +
+  geom_point() +
+  theme_Publication() +
+  theme(legend.position='right',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+p
+
+
+
+p <- ggplot(diff_dep_rate_compare, 
+            aes(x = ceres_diff_dep_rate,
+                y = naive_diff_dep_rate,
+                color = cn_mean,
+                label = gene)) +
+  geom_point() +
+  theme_Publication() +
+  theme(legend.position='right',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+```
+
+## Enriched dependencies
+
+```{r}
+pediatric_tumor_types <- mf %>% 
+  distinct(Type, PvA) %>% 
+  filter(PvA=='Pediatric') %$% 
+  Type
+```
+
+```{r}
+# Do a two group comparison for all the different pediatric tumor types vs. all and then plot the p values with an effect size below some cutoff
+# Only perform comparison if at least 3 lines in a tumor type
+source("R/run_lm_stats_limma.R")
+
+if (!file.exists('data/nonceres_tumor_type_enriched_dependencies_all.csv'))
+{
+  results_two_groups <- data.frame(gene=colnames(nonceres_gene_effect), stringsAsFactors = F)
+  for (tumor_type in unique(mf %$% unique(Type))) {
+    print(tumor_type)
+    if ((mf %>% filter(Type==tumor_type) %$% length(intersect(DepMap_ID, row.names(nonceres_gene_effect)))) < 3) {
+      next
+    }
+    
+    # Run two group comparison
+    comp_out <- nonceres_gene_effect %>% run_lm_stats_limma(., row.names(.) %in% (mf %>% filter(Type==tumor_type) %$% DepMap_ID), target_type = 'gene')
+    
+    results_two_groups %<>% inner_join(., 
+                                       comp_out %>% 
+                                         dplyr::select(gene, EffectSize, p.left, q.left) %>% 
+                                         set_colnames(c('gene', paste0('ES_', tumor_type), paste0('p_', tumor_type), paste0('q_', tumor_type))), 
+                                       by='gene')
+  }
+  
+  fwrite(results_two_groups, file='data/nonceres_tumor_type_enriched_dependencies_all.csv')
+} else
+{
+  results_two_groups <- fread('data/nonceres_tumor_type_enriched_dependencies_all.csv')
+}
+```
+
+
+### Comparing enriched dependencies by tumor type in CERES vs naive {.tabset .tabset-fade}
+
+#### Each tumor-type highlighting CN
+
+```{r}
+if (file.exists('data/tumor_type_enriched_dependencies_all.csv'))
+{
+  results_two_groups_ceres <- fread('data/tumor_type_enriched_dependencies_all.csv')
+  two_group_ceres_exists <- TRUE
+} else
+{
+  two_group_ceres_exists <- FALSE
+}
+```
+
+```{r eval=two_group_ceres_exists}
+results_two_groups <- fread('data/nonceres_tumor_type_enriched_dependencies_all.csv')
+all_results_two_groups <- right_join(results_two_groups_ceres, results_two_groups, by = "gene", suffix = c(".ceres", ".naive"))
+
+gene_cn_metrics <- data.frame(gene=colnames(gene_cn), stringsAsFactors = F)
+for (tumor_type in unique(mf %$% unique(Type))) {
+  print(tumor_type)
+  if ((mf %>% filter(Type==tumor_type) %$% length(intersect(DepMap_ID, row.names(nonceres_gene_effect)))) < 3) {
+    next
+  }
+  in_context <- rownames(gene_cn) %in% rownames(gene_effect)[rownames(gene_effect) %in% (mf %>% filter(Type==tumor_type) %$% DepMap_ID)]
+  out_context <- rownames(gene_cn) %in% rownames(gene_effect)[rownames(gene_effect) %in% (mf %>% filter(Type!=tumor_type) %$% DepMap_ID)]
+  
+  gene_cn_context <- as.data.frame(cbind(as.vector(colnames(gene_cn)), 
+                                         as.vector(apply(gene_cn[in_context, ], 
+                                                         2, mean, na.rm = T)), 
+                                         as.vector(apply(gene_cn[in_context, ], 
+                                                         2, median, na.rm = T)), 
+                                         as.vector(apply(gene_cn[in_context, ], 
+                                                         2, max, na.rm = T)), 
+                                         as.vector((apply(gene_cn[in_context, ] > log2(3), 
+                                                         2, sum, na.rm = T) / length(which(in_context))) -
+                                                     ((apply(gene_cn[out_context, ] > log2(3), 
+                                                           2, sum, na.rm = T)) / length(which(out_context))))
+                                         ),
+                                   stringsAsFactors = F) %>% 
+    dplyr::mutate(V2 = as.numeric(V2), V3 = as.numeric(V3), V4 = as.numeric(V4), V5 = as.numeric(V5)) %>%  
+    set_colnames(c('gene', paste0('gene_cn_mean_', tumor_type), paste0('gene_cn_median_', tumor_type), 
+                   paste0('gene_cn_max_', tumor_type), paste0('gene_cn_fraction_amp_', tumor_type))) 
+  
+  gene_cn_metrics %<>% inner_join(., gene_cn_context, by='gene')
+}
+
+all_results_two_groups <- inner_join(all_results_two_groups %>% dplyr::mutate(entrez = gsub(".* ", "", gene)), 
+                                      gene_cn_metrics %>% dplyr::mutate(entrez = gsub(".* ", "", gene)) %>% select(-gene), 
+                                      by = "entrez") 
+
+all_results_two_groups_tidy <- NULL
+
+for (tumor_type in sort(unique(mf %$% unique(Type)))) {
+  if ((mf %>% filter(Type==tumor_type) %$% length(intersect(DepMap_ID, row.names(nonceres_gene_effect)))) < 3) {
+    next
+  }
+  tumor_type_n <- length(which(rownames(gene_effect) %in% (mf %>% filter(Type==tumor_type) %$% DepMap_ID)))
+  all_results_two_groups_tidy_context <- NULL
+  all_results_two_groups_tidy_context <- all_results_two_groups[, c("gene", 
+                                                                    paste0("ES_", tumor_type, ".ceres"),
+                                                                    paste0("p_", tumor_type, ".ceres"),
+                                                                    paste0("q_", tumor_type, ".ceres"),
+                                                                    paste0("ES_", tumor_type, ".naive"),
+                                                                    paste0("p_", tumor_type, ".naive"),
+                                                                    paste0("q_", tumor_type, ".naive"),
+                                                                    paste0("gene_cn_median_", tumor_type),
+                                                                    paste0("gene_cn_mean_", tumor_type),
+                                                                    paste0("gene_cn_max_", tumor_type),
+                                                                    paste0("gene_cn_fraction_amp_", tumor_type)
+                                                                    )] %>% 
+    dplyr::mutate(tumor_type = paste0(tumor_type, "\n(n=", tumor_type_n, ")")) %>%
+    set_colnames(., c("gene", "ES.ceres", "p.ceres", "q.ceres",
+                 "ES.naive", "p.naive", "q.naive", "gene_cn_median", 
+                 "gene_cn_mean", "gene_cn_max", "gene_cn_fraction_amp", "tumor_type")) 
+  
+  all_results_two_groups_tidy <- rbind(all_results_two_groups_tidy, all_results_two_groups_tidy_context)
+}
+```
+
+```{r include=T, eval=two_group_ceres_exists, fig.width=10, fig.height=18}
+p <- ggplot(all_results_two_groups_tidy %>% 
+              dplyr::filter(q.ceres < 0.05 | q.naive < 0.05) %>%
+              dplyr::filter(!is.na(gene_cn_median)),  
+            aes(x = -log10(q.ceres), 
+                y = -log10(q.naive), 
+                label = gene, 
+                fill = gene_cn_fraction_amp, 
+                size = gene_cn_median)) + 
+  geom_point(shape = 21, color = "black") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  geom_label_repel(data = all_results_two_groups_tidy %>% 
+                     filter((-log10(q.ceres) + log10(q.naive)) > 10 | 
+                              (-log10(q.ceres) + log10(q.naive)) < -50), 
+                   mapping = aes(size = NULL, color = NULL, fill = NULL),
+                   size = 2,
+                   fill = rgb(1, 1, 1, 0.5), 
+                   force = 100, nudge_x = 5) +
+  xlab(paste0("-log10(q ceres)")) + 
+  ylab(paste0("-log10(q naive)")) + 
+  xlim(0, 90) + 
+  ylim(0, 90) +
+  scale_fill_gradient2(high = "red", mid = "white", low = "blue", midpoint = 0, name = "Tumor-type\nrelative\namplification", limits = c(-1,1), 
+                       oob = squish) + 
+  scale_size(name = "Tumor-type\ncopy number\nmedian", limits = c(0,5)) + 
+  theme_Publication() +
+  theme(legend.position='right',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  facet_wrap(~tumor_type, ncol = 4)
+print(p)
+```
+
+
+#### All tumor-types vs CN
+
+```{r include=T, eval=two_group_ceres_exists, fig.width=10, fig.height=10}
+p <- ggplot(all_results_two_groups_tidy %>% 
+              dplyr::filter(q.ceres < 0.05 | q.naive < 0.05) %>%
+              dplyr::filter(!is.na(gene_cn_median)),  
+            aes(x = (-log10(q.ceres) + log10(q.naive)), 
+                y = gene_cn_median, 
+                fill = gene_cn_fraction_amp, 
+                size = gene_cn_max,
+                label = paste0(gene, "\n", tumor_type))) + 
+  geom_point(shape = 21, color = "black") +
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_vline(xintercept = 0, linetype = "dashed") + 
+  xlab(paste0("-log10(q ceres) - -log10(q naive)")) + 
+  ylab(paste0("Tumor-type median gene copy number")) + 
+  scale_fill_gradient2(high = "red", mid = "white", low = "blue", midpoint = 0, name = "Tumor-type\nrelative\namplification", limits = c(-1,1), 
+                       oob = squish) + 
+  scale_size(name = "Tumor-type\ncopy number\nmaximum") + 
+  theme_Publication() +
+  theme(legend.position='right',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+print(p)
+```
+
+
+#### All tumor-types vs CN (labelled 1)
+
+```{r include=T, eval=two_group_ceres_exists, fig.width=10, fig.height=10}
+p <- ggplot(all_results_two_groups_tidy %>% 
+              dplyr::filter(q.ceres < 0.05 | q.naive < 0.05) %>%
+              dplyr::filter(!is.na(gene_cn_median)),  
+            aes(x = (-log10(q.ceres) + log10(q.naive)), 
+                y = gene_cn_median, 
+                fill = gene_cn_fraction_amp, 
+                size = gene_cn_max,
+                label = paste0(gene, "\n", tumor_type))) + 
+  geom_point(shape = 21, color = "black") +
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_vline(xintercept = 0, linetype = "dashed") + 
+  geom_label_repel(data = all_results_two_groups_tidy %>%
+                     filter((-log10(q.ceres) + log10(q.naive)) < -7),
+                   mapping = aes(size = NULL, color = NULL, fill = NULL),
+                   size = 2,
+                   fill = rgb(1, 1, 1, 0.5),
+                   force = 10, nudge_x = 5) +
+  xlab(paste0("-log10(q ceres) - -log10(q naive)")) + 
+  ylab(paste0("Tumor-type median gene copy number")) + 
+  scale_fill_gradient2(high = "red", mid = "white", low = "blue", midpoint = 0, name = "Tumor-type\nrelative\namplification", limits = c(-1,1), 
+                       oob = squish) + 
+  scale_size(name = "Tumor-type\ncopy number\nmaximum") + 
+  theme_Publication() +
+  theme(legend.position='right',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+print(p)
+```
+
+
+#### All tumor-types vs CN (labelled 2)
+
+```{r include=T, eval=two_group_ceres_exists, fig.width=10, fig.height=10}
+p <- ggplot(all_results_two_groups_tidy %>% 
+              dplyr::filter(q.ceres < 0.05 | q.naive < 0.05) %>%
+              dplyr::filter(!is.na(gene_cn_median)),  
+            aes(x = (-log10(q.ceres) + log10(q.naive)), 
+                y = gene_cn_median, 
+                fill = gene_cn_fraction_amp, 
+                size = gene_cn_max,
+                label = paste0(gene, "\n", tumor_type))) + 
+  geom_point(shape = 21, color = "black") +
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_vline(xintercept = 0, linetype = "dashed") + 
+  geom_label_repel(data = all_results_two_groups_tidy %>%
+                     filter((-log10(q.ceres) + log10(q.naive)) > 7),
+                   mapping = aes(size = NULL, color = NULL, fill = NULL),
+                   size = 2,
+                   fill = rgb(1, 1, 1, 0.5),
+                   force = 10, nudge_x = 5) +
+  xlab(paste0("-log10(q ceres) - -log10(q naive)")) + 
+  ylab(paste0("Tumor-type median gene copy number")) + 
+  scale_fill_gradient2(high = "red", mid = "white", low = "blue", midpoint = 0, name = "Tumor-type\nrelative\namplification", limits = c(-1,1), 
+                       oob = squish) + 
+  scale_size(name = "Tumor-type\ncopy number\nmaximum") + 
+  theme_Publication() +
+  theme(legend.position='right',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+print(p)
+```
+
+
+#### CN and corrected CERES enrichment
+
+```{r}
+gene_cn <- load_gene_cn()
+segment_cn <- load_segment_cn() %>%
+  dplyr::mutate(Chromosome = gsub("chr", "", Chromosome))
+
+guide_map_url <- "https://ndownloader.figshare.com/files/21521916"
+
+load_guide_map <- function(){
+  if(!file.exists("~/Downloads/guide_map.csv")) # If file does not exist, download from FigShare. Otherwise load local file.
+  {
+    guide_map <- fread(guide_map_url)
+    fwrite(guide_map, "~/Downloads/guide_map.csv")
+  } 
+  
+  guide_map <- fread("~/Downloads/guide_map.csv")
+  return(guide_map)
+}
+
+guide_map <- load_guide_map()
+gene_chr_coord <- guide_map %>% dplyr::mutate(chr = gsub("_.*", "", genome_alignment),
+                                              coord = as.numeric(gsub("_.*", "", gsub("chr[0-9X]*_", "", genome_alignment)))) %>%
+  dplyr::group_by(gene) %>%
+  dplyr::mutate(coord_avg = mean(coord)) %>%
+  dplyr::select(gene, chr, coord_avg) %>%
+  unique()
+```
+
+```{r include=T, eval=two_group_ceres_exists, fig.width=10, fig.height=15}
+plot_cn_deps <- function(tumor_type_to_plot, chr_to_plot, data_to_plot) {
+  tumor_type_lines <- rownames(nonceres_gene_effect)[rownames(nonceres_gene_effect) %in% (mf %>% filter(Type==tumor_type_to_plot) %$% DepMap_ID)]
+  genes_on_chr <- gene_chr_coord %>% dplyr::filter(chr == chr_to_plot) %>%
+    dplyr::mutate(focus = gene %in% (data_to_plot %>% 
+                                       dplyr::filter(grepl(tumor_type_to_plot, tumor_type), grepl(chr_to_plot, chr)) %$% gene)) %>%
+    dplyr::mutate(focus = factor(focus, levels = c(FALSE, TRUE)))
+  
+  tumor_type_dep_data_naive <- as.data.frame(nonceres_gene_effect[tumor_type_lines, colnames(nonceres_gene_effect) %in% genes_on_chr$gene]) %>%
+    tidyr::pivot_longer(., everything()) %>%
+    dplyr::mutate(DepMap_ID = gsub("[.].*", "", rownames(.))) %>%
+    dplyr::rename(gene = name, naive_effect = value) %>%
+    dplyr::left_join(., genes_on_chr, by = "gene")
+  
+  tumor_type_dep_data_ceres <- as.data.frame(gene_effect[tumor_type_lines, colnames(gene_effect) %in% genes_on_chr$gene]) %>%
+    tidyr::pivot_longer(., everything()) %>%
+    dplyr::mutate(DepMap_ID = gsub("[.].*", "", rownames(.))) %>%
+    dplyr::rename(gene = name, ceres_effect = value) %>%
+    dplyr::left_join(., genes_on_chr, by = "gene")
+  
+  cn_to_plot <- as.data.frame(gene_cn[tumor_type_lines, colnames(gene_cn) %in% genes_on_chr$gene]) %>%
+    tidyr::pivot_longer(., everything()) %>%
+    dplyr::mutate(DepMap_ID = gsub("[.].*", "", rownames(.))) %>%
+    dplyr::rename(gene = name, gene_cn = value) %>%
+    dplyr::left_join(., genes_on_chr, by = "gene")
+  
+  cn_to_plot <- segment_cn %>% 
+    dplyr::filter(DepMap_ID %in% tumor_type_lines, Chromosome %in% gsub("chr", "", chr_to_plot)) %>%
+    tidyr::pivot_longer(., c("Start", "End")) %>%
+    dplyr::filter(Num_Probes > 1) %>%
+    dplyr::arrange(DepMap_ID, value)
+  
+  p_ceres <- ggplot(tumor_type_dep_data_ceres, aes(x = coord_avg, y = ceres_effect, fill = focus)) +
+    geom_point(shape = 21, alpha = 0.7, size = 3) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "gray") +
+    geom_step(data = cn_to_plot, aes(x = value, y = log2(Segment_Mean + 1), fill = NULL)) + 
+    coord_cartesian(xlim = c(min(tumor_type_dep_data_ceres %>% dplyr::filter(focus == TRUE) %$% coord_avg, na.rm = T) - 1e7,
+                             max(tumor_type_dep_data_ceres %>% dplyr::filter(focus == TRUE) %$% coord_avg, na.rm = T) + 1e7)) + 
+    scale_fill_manual(values = c("TRUE" = "red", "FALSE" = "gray")) +
+    xlab("Position on chromosome") + ylab("Ceres gene effect") + 
+    ggtitle(paste0(tumor_type_to_plot, ": ", chr_to_plot)) + 
+    theme_Publication() +
+    theme(legend.position='right',
+          panel.border = element_blank(), panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+    facet_wrap(~DepMap_ID)
+  
+  p_naive <- ggplot(tumor_type_dep_data_naive, aes(x = coord_avg, y = naive_effect, fill = focus)) +
+    geom_point(shape = 21, alpha = 0.7, size = 3) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "gray") +
+    geom_step(data = cn_to_plot, aes(x = value, y = log2(Segment_Mean + 1), fill = NULL)) + 
+    coord_cartesian(xlim = c(min(tumor_type_dep_data_ceres %>% dplyr::filter(focus == TRUE) %$% coord_avg, na.rm = T) - 1e7,
+                             max(tumor_type_dep_data_ceres %>% dplyr::filter(focus == TRUE) %$% coord_avg, na.rm = T) + 1e7)) + 
+    scale_fill_manual(values = c("TRUE" = "red", "FALSE" = "gray")) +
+    xlab("Position on chromosome") + ylab("Naive gene effect") + 
+    ggtitle(paste0(tumor_type_to_plot, ": ", chr_to_plot)) + 
+    theme_Publication() +
+    theme(legend.position='right',
+          panel.border = element_blank(), panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+    facet_wrap(~DepMap_ID)
+  
+  return(list(p_naive, p_ceres))
+}
+
+data_to_plot <- all_results_two_groups_tidy %>% filter((-log10(q.ceres) + log10(q.naive)) < -10) %>%
+  dplyr::left_join(., gene_chr_coord, by = "gene")
+
+chr_regions_tumor_to_plot <- data_to_plot %>% 
+  dplyr::select(chr, tumor_type) %>%
+  dplyr::mutate(tumor_type = gsub("\n.*", "", tumor_type)) %>%
+  unique()
+
+for(i in 1:dim(chr_regions_tumor_to_plot)[1])
+{
+  print(plot_cn_deps(chr_regions_tumor_to_plot$tumor_type[i], chr_regions_tumor_to_plot$chr[i], data_to_plot))
+}
+```
+
+
+#### Guide efficacy and improved CERES enrichment
+
+```{r}
+guide_efficacy_url <- "https://ndownloader.figshare.com/files/21521913"
+guide_logFC_url <- "https://ndownloader.figshare.com/files/22543823"
+replicate_map_url <- "https://ndownloader.figshare.com/files/21521928"
+
+load_guide_efficacy <- function(){
+  if(!file.exists("~/Downloads/guide_efficacy.csv")) # If file does not exist, download from FigShare. Otherwise load local file.
+  {
+    guide_efficacy <- fread(guide_efficacy_url)
+    fwrite(guide_efficacy, "~/Downloads/guide_efficacy.csv")
+  } 
+  
+  guide_efficacy <- fread("~/Downloads/guide_efficacy.csv")
+  return(guide_efficacy)
+}
+
+load_guide_logFC <- function(){
+  if(!file.exists("~/Downloads/guide_logFC.csv")) # If file does not exist, download from FigShare. Otherwise load local file.
+  {
+    guide_logFC <- fread(guide_logFC_url)
+    fwrite(guide_logFC, "~/Downloads/guide_logFC.csv")
+  } 
+  
+  guide_logFC <- fread("~/Downloads/guide_logFC.csv")
+  # Reformat as a matrix.
+  rownames_temp <- guide_logFC$V1
+  guide_logFC <- as.matrix(guide_logFC[,-1])
+  rownames(guide_logFC) <- rownames_temp
+  return(guide_logFC)
+}
+
+load_replicate_map <- function(){
+  if(!file.exists("~/Downloads/replicate_map.csv")) # If file does not exist, download from FigShare. Otherwise load local file.
+  {
+    replicate_map <- fread(replicate_map_url)
+    fwrite(replicate_map, "~/Downloads/replicate_map.csv")
+  } 
+  
+  replicate_map <- fread("~/Downloads/replicate_map.csv")
+  return(replicate_map)
+}
+
+guide_efficacy <- load_guide_efficacy()
+guide_logFC <- load_guide_logFC()
+replicate_map <- load_replicate_map()
+```
+
+```{r include=T, eval=two_group_ceres_exists}
+plot_guide_data <- function(tumor_type, gene_to_plot) {
+  gene_data <- pivot_longer(as.data.frame(guide_logFC[rownames(guide_logFC) %in% (guide_map %>% filter(gene == gene_to_plot) %$% sgrna), ]) %>%
+                              dplyr::mutate(sgrna = rownames(.)), 
+                            !starts_with("sgrna"), 
+                            names_to = "replicate_ID")
+  gene_data <- full_join(gene_data, replicate_map, by = "replicate_ID") %>% 
+    dplyr::filter(DepMap_ID %in% mf$DepMap_ID) %>%
+    dplyr::mutate(class = ifelse(DepMap_ID %in% (mf %>% filter(Type==tumor_type) %$% DepMap_ID), 
+                                 tumor_type,
+                                 "Other")) %>%
+    dplyr::mutate(class = factor(class, levels = c("Other", names(complete_type_colors))))
+  gene_data <- left_join(gene_data, guide_efficacy %>% dplyr::rename(sgrna = V1), by = "sgrna") %>%
+    left_join(., 
+              as.data.frame(cbind(unique(gene_data$sgrna), c(1:length(unique(gene_data$sgrna))))) %>%
+                set_colnames(., c("sgrna", "sgnumber")), 
+              by = "sgrna") %>%
+    dplyr::mutate(sgrna_annot = paste0("#", sgnumber, "\nefficacy ", round(efficacy, 2), "\noffset ", round(offset, 2)))
+  
+  p <- ggplot(gene_data %>% filter(!is.na(value)), aes(x = sgrna_annot, y = value, fill = (class))) + 
+    geom_boxplot(alpha = 0.7) +
+    xlab(paste0("sgRNAs")) + 
+    ylab(paste0("logFC")) + 
+    scale_fill_manual(name = "Tumor type", values = c("Other" = "gray", complete_type_colors)) + 
+    ggtitle(gene_to_plot) + 
+    theme_Publication() +
+    theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='right', 
+          panel.border = element_blank(), panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) 
+  return(p)
+}
+
+data_to_plot <- all_results_two_groups_tidy %>% filter((-log10(q.ceres) + log10(q.naive)) > 7)
+
+for(i in 1:dim(data_to_plot)[1])
+{
+  print(plot_guide_data(tumor_type = gsub("[\n].*", "", data_to_plot$tumor_type[i]), gene_to_plot = data_to_plot$gene[i]))
+}
+```
+
+## Session Info
+
+```{r session_info, include=TRUE, echo=TRUE, results='markup'}
+devtools::session_info()
+```
+
+```{r include=TRUE}
+as.data.frame(`Dataset Used`) %>% datatable(options=list(scrollX=T))
+```

@@ -1,0 +1,2792 @@
+---
+title: "Dependency and Mutation Rate Figures"
+author: "Neekesh Dharia & Guillaume Kugener"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include=FALSE, message=FALSE, warning = FALSE)
+source('setup.R')
+source('load_data.R')
+```
+
+
+# Generated using: `r toupper(version_to_use)`
+
+
+```{r load_needed_datasets}
+# This script uses the following datasets:
+mf <- mf
+mutations <- load_mutations()
+gene_dependency <- load_gene_dependency()
+gene_effect <- load_gene_effect()
+gene_expression <- load_gene_expression()
+gene_lrt_table <- load_lrt_table()
+achilles_common_essentials <- load_achilles_common_essentials()
+
+if(!dir.exists('figures')) { dir.create('figures') }
+if(!dir.exists('figures/mutation')) { dir.create('figures/mutation') }
+```
+
+The table below highlights all of the cell lines that are included in the analyses and the types that they are annotated as:
+
+```{r}
+cell_lines_included_table <- rbind(
+  data.frame(name=row.names(gene_dependency), stringsAsFactors = F) %>% mutate(Source='Dependency'),
+  data.frame(name=(unique(mutations$Tumor_Sample_Barcode)), stringsAsFactors = F) %>% mutate(Source='Mutation')
+) %>% mutate(value=1) %>% mutate(DepMap_ID=(name)) %>%
+  spread(., Source, value) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, CCLE_name, Type), by='DepMap_ID') %>%
+  dplyr::select(DepMap_ID, CCLE_name, everything())
+```
+
+```{r include=TRUE} 
+cell_lines_included_table %>% datatable(options=list(scrollX=T))
+```
+
+# Overview
+
+* Calculate mutation rates / burden per cell line using multiple methods given fact that these historical cell lines do not have matched germline for somatic mutation calling
+* Compare mutation rates to dependency rates
+* Compare dependency rates to screen confounders (quality, Cas9 activity, etc)
+
+
+```{r}
+lrt_genes <- gene_lrt_table %>% filter((lrt) > 100, skewed_left) %$%
+  gene
+
+achilles_non_essentials <- colSums(gene_dependency >= 0.5, na.rm = T)
+achilles_non_essentials <- names(achilles_non_essentials[achilles_non_essentials == 0])
+
+lrt_genes_ceres <- lrt_genes
+lrt_genes_ceres <- lrt_genes_ceres[!(lrt_genes_ceres %in% c(achilles_non_essentials, achilles_common_essentials$gene))]
+
+# Dependencies (prob > 0.5) by type
+total_deps_by_cl_lrt_only <- apply(gene_dependency[,lrt_genes_ceres], 1, FUN = function(x) length(x[x > 0.5]))
+total_deps_by_cl <- apply(gene_dependency[,], 1, FUN = function(x) length(x[x > 0.5]))
+
+counts_prob_dep_df <- data.frame(total_deps_by_cl) %>%
+  mutate(DepMap_ID=row.names(.)) %>%
+  mutate(total_deps_by_cl_lrt_only=total_deps_by_cl_lrt_only[DepMap_ID]) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type, PvA), by='DepMap_ID') %>%
+  mutate(Group=ifelse(PvA=='Adult', PvA, Type))
+
+counts_prob_dep_df_order <- counts_prob_dep_df %>%
+  group_by(Type) %>%
+  dplyr::summarise(med=median(total_deps_by_cl, na.rm = T)) %>%
+  arrange(med) %$% Type
+
+counts_prob_dep_df_order_lrt_only <- counts_prob_dep_df %>%
+  group_by(Type) %>%
+  dplyr::summarise(med=median(total_deps_by_cl_lrt_only, na.rm = T)) %>%
+  arrange(med) %$% Type
+
+counts_prob_dep_df %<>% mutate(Type1=factor(Type, levels=counts_prob_dep_df_order), Type2=factor(Type, levels=counts_prob_dep_df_order_lrt_only))
+```
+
+
+
+### COSMIC gene list
+
+The list of COSMIC genes was downloaded from https://cancer.sanger.ac.uk/cosmic/census on 1/11/2020 selecting 'both tiers'.
+
+```{r}
+# Downloaded from https://cancer.sanger.ac.uk/cosmic/census on 1/11/2020 selecting 'both tiers'
+cosmic_latest_download <- fread("input_files/Census_allSat Jan 11 22_50_01 2020.tsv")
+```
+
+
+## WES counts from MAF file {.tabset .tabset-fade}
+
+Mutation plot counting the total number of mutations we cell line using only WES data (from either Sanger or the Broad).
+
+```{r}
+# Count the number of mutations (first group by CL and gene, then by CL and count)
+# If it is blank and not NA, then this mutation is NOT called in that cell line
+count_mutation_events_by_cell_line_ALL_WES <- mutations %>%
+  filter(DepMap_ID %in% mf$DepMap_ID) %>%
+  filter(!is.na(SangerRecalibWES_AC) | !is.na(CGA_WES_AC)) %>%
+  filter(CGA_WES_AC != '' | SangerRecalibWES_AC != '') %>%
+  group_by(Tumor_Sample_Barcode) %>% 
+  dplyr::summarise(count=n())
+
+count_mutation_events_by_cell_line_cosmicGenes_WES <- mutations %>%
+  filter(DepMap_ID %in% mf$DepMap_ID) %>%
+  filter(!is.na(SangerRecalibWES_AC) | !is.na(CGA_WES_AC)) %>%
+  filter(CGA_WES_AC != '' | SangerRecalibWES_AC != '') %>%
+  # Keep only COSMIC genes
+  filter(Entrez_Gene_Id %in% cosmic_latest_download$`Entrez GeneId`) %>%
+  group_by(Tumor_Sample_Barcode) %>% 
+  dplyr::summarise(count=n())
+
+count_mutation_events_by_cell_line_cosmicGenesfiltered_WES <- mutations %>%
+  filter(DepMap_ID %in% mf$DepMap_ID) %>%
+  filter(!is.na(SangerRecalibWES_AC) | !is.na(CGA_WES_AC)) %>%
+  filter(CGA_WES_AC != '' | SangerRecalibWES_AC != '') %>%
+  # Keep only COSMIC genes
+  filter(Entrez_Gene_Id %in% cosmic_latest_download$`Entrez GeneId`) %>%
+  # Keep only damaging, missense, or hotspot
+  filter(as.logical(isDeleterious) | Variant_Classification=='Missense_Mutation' | as.logical(isCOSMIChotspot) | as.logical(isTCGAhotspot)) %>%
+  group_by(Tumor_Sample_Barcode) %>% 
+  dplyr::summarise(count=n())
+```
+
+
+### All WES
+
+```{r include=TRUE}
+# Simple box plot, coloring the pediatric samples
+for_plot_count_mutations <- count_mutation_events_by_cell_line_ALL_WES %>%
+  dplyr::rename(DepMap_ID=Tumor_Sample_Barcode) %>%
+  left_join(., mf, by='DepMap_ID') %>%
+  mutate(Group=ifelse(PvA == 'Adult', 'Adult', Type)) %>%
+  group_by(Type) %>%
+  dplyr::mutate(rank=rank(count)/max(n(),2)) %>%
+  ungroup()
+
+# Order by median
+order_lineages_mutational_burden <- for_plot_count_mutations %>%
+  group_by(Type) %>%
+  dplyr::summarise(med=median(count, na.rm = T)) %$%
+  setNames(med, Type) %>% .[order(.)] %>% names()
+
+for_plot_count_mutations %<>% mutate(Type=factor(Type, levels=order_lineages_mutational_burden)) %>%
+  mutate(plot_rank=rank + as.integer(Type)) %>% 
+  group_by(Type) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(Type,' (n=',n,')')) %>%
+  ungroup()
+
+# Get coordindates for tick marks
+cl_order <- for_plot_count_mutations %$% setNames(plot_rank, DepMap_ID) %>% .[order(.)]
+
+labels_coords <- data.frame(DepMap_ID=names(cl_order), val=cl_order) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type) %>% distinct(), by='DepMap_ID') %>%
+  left_join(., for_plot_count_mutations %>% dplyr::select(DepMap_ID, label) %>% distinct(), by='DepMap_ID') %>%
+  group_by(label) %>%
+  dplyr::summarise(v=ifelse(max(val)==min(val), val, (max(val)+floor(min(val)))/2)) %$%
+  setNames(v, label)
+
+for_plot_count_mutations <- for_plot_count_mutations %>%
+  mutate(CL_for_plot=factor(DepMap_ID, levels=names(cl_order)))
+
+# Add the median line segment
+med_segs <- for_plot_count_mutations %>%
+  group_by(Type) %>%
+  dplyr::summarise(
+    x = floor(min(plot_rank))+0.25, xend=ceiling(max(plot_rank))-0.25,
+    y = median(count, na.rm = T)
+  ) %>%
+  mutate(x=ifelse(x > xend, x - 1, x)) %>%
+  arrange(x)
+
+total_mutations_counting_wes <- ggplot(for_plot_count_mutations, aes(plot_rank, (count), color=Group)) +
+  geom_point(aes(fill=Group), pch=21, alpha=0.75, size=3) +
+  geom_segment(data=med_segs, aes(x=x, xend=xend, y=y, yend=y, group=Type), color='black', size=0.5) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000, 10000), limits = c(25, 50000)) +
+  theme_bw() +
+  xlab('') + ylab('log10(total mutations in WES)') +
+  scale_x_continuous(breaks=labels_coords, labels=names(labels_coords)) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+saveRDS(total_mutations_counting_wes, file = paste0('figures/mutation/total_mutations_across_lineages_in_WES_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_wes, filename = paste0('figures/mutation/total_mutations_across_lineages_in_WES_', version_to_use, '.pdf'), 
+       height = 14, width=20, units='cm', device='pdf', useDingbats=FALSE)
+
+total_mutations_counting_wes
+
+# Combining dependency and mutation
+# Simple scatter plot, coloring the pediatric samples
+for_plot_count_mutations <- count_mutation_events_by_cell_line_ALL_WES %>%
+  dplyr::rename(DepMap_ID=Tumor_Sample_Barcode) %>%
+  left_join(., mf, by='DepMap_ID') %>%
+  mutate(Group=ifelse(PvA == 'Adult', 'Adult', Type)) %>%
+  mutate(Type=ifelse(grepl('MATCHED', DepMap_ID), 'Normal', Type))
+for_plot_count_mutations_deps <- plyr::join(for_plot_count_mutations, counts_prob_dep_df[,1:3], by="DepMap_ID") %>%
+  arrange(Group)
+
+total_mutations_counting_wes <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl)), 
+                                       aes(total_deps_by_cl, (count), fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000, 10000), limits = c(25, 50000)) +
+  theme_bw() +
+  xlab('Number of dependencies') + ylab('log10(total mutations in WES)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+saveRDS(total_mutations_counting_wes, file = paste0('figures/mutation/deps_v_total_mutations_across_lineages_in_WES_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_wes, filename = paste0('figures/mutation/deps_v_total_mutations_across_lineages_in_WES_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+total_mutations_counting_wes
+
+total_mutations_counting_wes <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl_lrt_only)), 
+                                       aes(total_deps_by_cl_lrt_only, (count), fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000, 10000), limits = c(25, 50000)) +
+  theme_bw() +
+  xlab('Number of selective dependencies') + ylab('log10(total mutations in WES)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none', 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+saveRDS(total_mutations_counting_wes, file = paste0('figures/mutation/depsLRT_v_total_mutations_across_lineages_in_WES_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_wes, filename = paste0('figures/mutation/depsLRT_v_total_mutations_across_lineages_in_WES_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+total_mutations_counting_wes
+
+### Plot cmparison of peds v adults
+for_plot_count_mutations_deps %<>% filter(Type!="Immortalized")
+for_plot_count_mutations_deps$PvA <- factor(for_plot_count_mutations_deps$PvA, levels = c("Fibroblast", "Pediatric", "Adult"))
+for_plot_count_mutations_deps %<>% group_by(PvA) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(PvA,' (n=',n,')')) %>%
+  ungroup()
+total_mutations_counting_wes <- ggplot(for_plot_count_mutations_deps, aes(x = PvA, y = (count), fill=PvA, color=PvA)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  scale_fill_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='black')) +
+  scale_color_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='black')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000, 10000), limits = c(25, 50000)) +
+  theme_bw() +
+  xlab('') + ylab('log10(total mutations in WES)') +
+  scale_x_discrete(labels=setNames(unique(for_plot_count_mutations_deps$label), unique(for_plot_count_mutations_deps$PvA))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means(comparisons = list(c("Pediatric","Fibroblast"), c("Pediatric","Adult"), c("Fibroblast","Adult")), label.y = c(1500, 27000, 45000)) 
+
+saveRDS(total_mutations_counting_wes, file = paste0('figures/mutation/peds_v_other_total_mutations_across_lineages_in_WES_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_wes, filename = paste0('figures/mutation/peds_v_other_total_mutations_across_lineages_in_WES_', version_to_use, '.pdf'),
+       height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE)
+
+total_mutations_counting_wes
+```
+
+### WES filtered for COSMIC genes
+
+```{r include=TRUE}
+# Simple box plot, coloring the pediatric samples
+for_plot_count_mutations <- count_mutation_events_by_cell_line_cosmicGenes_WES %>%
+  dplyr::rename(DepMap_ID=Tumor_Sample_Barcode) %>%
+  left_join(., mf, by='DepMap_ID') %>%
+  mutate(Group=ifelse(PvA == 'Adult', 'Adult', Type)) %>%
+  group_by(Type) %>%
+  dplyr::mutate(rank=rank(count)/max(n(),2)) %>%
+  ungroup()
+
+# Order by median
+order_lineages_mutational_burden <- for_plot_count_mutations %>%
+  group_by(Type) %>%
+  dplyr::summarise(med=median(count, na.rm = T)) %$%
+  setNames(med, Type) %>% .[order(.)] %>% names()
+
+for_plot_count_mutations %<>% mutate(Type=factor(Type, levels=order_lineages_mutational_burden)) %>%
+  mutate(plot_rank=rank + as.integer(Type)) %>% 
+  group_by(Type) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(Type,' (n=',n,')')) %>%
+  ungroup()
+
+# Get coordindates for tick marks
+cl_order <- for_plot_count_mutations %$% setNames(plot_rank, DepMap_ID) %>% .[order(.)]
+
+labels_coords <- data.frame(DepMap_ID=names(cl_order), val=cl_order) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type) %>% distinct(), by='DepMap_ID') %>%
+  left_join(., for_plot_count_mutations %>% dplyr::select(DepMap_ID, label) %>% distinct(), by='DepMap_ID') %>%
+  group_by(label) %>%
+  dplyr::summarise(v=ifelse(max(val)==min(val), val, (max(val)+floor(min(val)))/2)) %$%
+  setNames(v, label)
+
+for_plot_count_mutations <- for_plot_count_mutations %>%
+  mutate(CL_for_plot=factor(DepMap_ID, levels=names(cl_order)))
+
+# Add the median line segment
+med_segs <- for_plot_count_mutations %>%
+  group_by(Type) %>%
+  dplyr::summarise(
+    x = floor(min(plot_rank))+0.25, xend=ceiling(max(plot_rank))-0.25,
+    y = median(count, na.rm = T)
+  ) %>%
+  mutate(x=ifelse(x > xend, x - 1, x)) %>%
+  arrange(x)
+
+total_mutations_counting_wes <- ggplot(for_plot_count_mutations, aes(plot_rank, (count), color=Group)) +
+  geom_point(aes(fill=Group), pch=21, alpha=0.75, size=3) +
+  geom_segment(data=med_segs, aes(x=x, xend=xend, y=y, yend=y, group=Type), color='black', size=0.5) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 3000)) +
+  theme_bw() +
+  xlab('') + ylab('log10(total WES mutations\nin COSMIC genes)') +
+  scale_x_continuous(breaks=labels_coords, labels=names(labels_coords)) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+saveRDS(total_mutations_counting_wes, file = paste0('figures/mutation/total_COSMICgene_mutations_across_lineages_in_WES_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_wes, filename = paste0('figures/mutation/total_COSMICgene_mutations_across_lineages_in_WES_', version_to_use, '.pdf'), 
+       height = 14, width=20, units='cm', device='pdf', useDingbats=FALSE)
+
+total_mutations_counting_wes
+
+# combining dependency and mutation
+# Simple scatter plot, coloring the pediatric samples
+for_plot_count_mutations <- count_mutation_events_by_cell_line_cosmicGenes_WES %>%
+  dplyr::rename(DepMap_ID=Tumor_Sample_Barcode) %>%
+  left_join(., mf, by='DepMap_ID') %>%
+  mutate(Group=ifelse(PvA == 'Adult', 'Adult', Type)) %>%
+  mutate(Type=ifelse(grepl('MATCHED', DepMap_ID), 'Normal', Type))
+for_plot_count_mutations_deps <- plyr::join(for_plot_count_mutations, counts_prob_dep_df[,1:3], by="DepMap_ID") %>%
+  arrange(Group)
+
+total_mutations_counting_wes <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl)), 
+                                       aes(total_deps_by_cl, (count), fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 3000)) +
+  theme_bw() +
+  xlab('Number of dependencies') + ylab('log10(total WES mutations\nin COSMIC genes)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+total_mutations_counting_wes
+saveRDS(total_mutations_counting_wes, file = paste0('figures/mutation/deps_v_total_COSMICgene_mutations_across_lineages_in_WES_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_wes, filename = paste0('figures/mutation/deps_v_total_COSMICgene_mutations_across_lineages_in_WES_', version_to_use, '.pdf'),
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+total_mutations_counting_wes <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl_lrt_only)), 
+                                       aes(total_deps_by_cl_lrt_only, (count), fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 3000)) +
+  theme_bw() +
+  xlab('Number of selective dependencies') + ylab('log10(total WES mutations\nin COSMIC genes)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+total_mutations_counting_wes
+saveRDS(total_mutations_counting_wes, file = paste0('figures/mutation/depsLRT_v_total_COSMICgene_mutations_across_lineages_in_WES_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_wes, filename = paste0('figures/mutation/depsLRT_v_total_COSMICgene_mutations_across_lineages_in_WES_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+### Plot cmparison of peds v adults
+for_plot_count_mutations_deps %<>% mutate(PvA=ifelse(Type=="Fibroblast",Type,PvA)) %>% filter(Type!="Immortalized")
+for_plot_count_mutations_deps$PvA <- factor(for_plot_count_mutations_deps$PvA, levels = c("Fibroblast", "Pediatric", "Adult"))
+for_plot_count_mutations_deps %<>% group_by(PvA) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(PvA,' (n=',n,')')) %>%
+  ungroup()
+total_mutations_counting_wes <- ggplot(for_plot_count_mutations_deps, aes(x = PvA, y = (count), fill=PvA, color=PvA)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  scale_fill_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='black')) +
+  scale_color_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='black')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 3000)) +
+  theme_bw() +
+  xlab('') + ylab('log10(total WES mutations\nin COSMIC genes)') +
+  scale_x_discrete(labels=setNames(unique(for_plot_count_mutations_deps$label), unique(for_plot_count_mutations_deps$PvA))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means(comparisons = list(c("Pediatric","Fibroblast"), c("Pediatric","Adult"), c("Fibroblast","Adult")), label.y = c(100, 1800, 2800)) 
+
+total_mutations_counting_wes
+saveRDS(total_mutations_counting_wes, file = paste0('figures/mutation/peds_v_other_COSMICgene_mutations_across_lineages_in_WES_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_wes, filename = paste0('figures/mutation/peds_v_other_COSMICgene_mutations_across_lineages_in_WES_', version_to_use, '.pdf'),
+       height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+### WES filtered for mutations in COSMIC genes
+
+```{r include=TRUE}
+# Simple box plot, coloring the pediatric samples
+for_plot_count_mutations <- count_mutation_events_by_cell_line_cosmicGenesfiltered_WES %>%
+  dplyr::rename(DepMap_ID=Tumor_Sample_Barcode) %>%
+  left_join(., mf, by='DepMap_ID') %>%
+  mutate(Group=ifelse(PvA == 'Adult', 'Adult', Type)) %>%
+  group_by(Type) %>%
+  dplyr::mutate(rank=rank(count)/max(n(),2)) %>%
+  ungroup()
+
+# Order by median
+order_lineages_mutational_burden <- for_plot_count_mutations %>%
+  group_by(Type) %>%
+  dplyr::summarise(med=median(count, na.rm = T)) %$%
+  setNames(med, Type) %>% .[order(.)] %>% names()
+
+for_plot_count_mutations %<>% mutate(Type=factor(Type, levels=order_lineages_mutational_burden)) %>%
+  mutate(plot_rank=rank + as.integer(Type)) %>% 
+  group_by(Type) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(Type,' (n=',n,')')) %>%
+  ungroup()
+
+# Get coordindates for tick marks
+cl_order <- for_plot_count_mutations %$% setNames(plot_rank, DepMap_ID) %>% .[order(.)]
+
+labels_coords <- data.frame(DepMap_ID=names(cl_order), val=cl_order) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type) %>% distinct(), by='DepMap_ID') %>%
+  left_join(., for_plot_count_mutations %>% dplyr::select(DepMap_ID, label) %>% distinct(), by='DepMap_ID') %>%
+  group_by(label) %>%
+  dplyr::summarise(v=ifelse(max(val)==min(val), val, (max(val)+floor(min(val)))/2)) %$%
+  setNames(v, label)
+
+for_plot_count_mutations <- for_plot_count_mutations %>%
+  mutate(CL_for_plot=factor(DepMap_ID, levels=names(cl_order)))
+
+# Add the median line segment
+med_segs <- for_plot_count_mutations %>%
+  group_by(Type) %>%
+  dplyr::summarise(
+    x = floor(min(plot_rank))+0.25, xend=ceiling(max(plot_rank))-0.25,
+    y = median(count, na.rm = T)
+  ) %>%
+  mutate(x=ifelse(x > xend, x - 1, x)) %>%
+  arrange(x)
+
+total_mutations_counting_wes <- ggplot(for_plot_count_mutations, aes(plot_rank, (count), color=Group)) +
+  geom_point(aes(fill=Group), pch=21, alpha=0.75, size=3) +
+  geom_segment(data=med_segs, aes(x=x, xend=xend, y=y, yend=y, group=Type), color='black', size=0.5) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 1500)) +
+  theme_bw() +
+  xlab('') + ylab('log10(hotspot/missense/damaging\nWES mutations in COSMIC genes)') +
+  scale_x_continuous(breaks=labels_coords, labels=names(labels_coords)) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+total_mutations_counting_wes
+saveRDS(total_mutations_counting_wes, file = paste0('figures/mutation/total_COSMICgenefiltered_mutations_across_lineages_in_WES_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_wes, filename = paste0('figures/mutation/total_COSMICgenefiltered_mutations_across_lineages_in_WES_', version_to_use, '.pdf'), height = 14, width=20, units='cm', device='pdf', useDingbats=FALSE)
+
+# combining dependency and mutation
+# Simple scatter plot, coloring the pediatric samples
+for_plot_count_mutations <- count_mutation_events_by_cell_line_cosmicGenesfiltered_WES %>%
+  dplyr::rename(DepMap_ID=Tumor_Sample_Barcode) %>%
+  left_join(., mf, by='DepMap_ID') %>%
+  mutate(Group=ifelse(PvA == 'Adult', 'Adult', Type)) %>%
+  mutate(Type=ifelse(grepl('MATCHED', DepMap_ID), 'Normal', Type))
+for_plot_count_mutations_deps <- plyr::join(for_plot_count_mutations, counts_prob_dep_df[,1:3], by="DepMap_ID") %>%
+  arrange(Group)
+
+total_mutations_counting_wes <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl)), 
+                                       aes(total_deps_by_cl, (count), fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 3000)) +
+  theme_bw() +
+  xlab('Number of dependencies') + ylab('log10(hotspot/missense/damaging\nWES mutations in COSMIC genes)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+total_mutations_counting_wes
+saveRDS(total_mutations_counting_wes, file = paste0('figures/mutation/deps_v_total_COSMICgenefiltered_mutations_across_lineages_in_WES_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_wes, filename = paste0('figures/mutation/deps_v_total_COSMICgenefiltered_mutations_across_lineages_in_WES_', version_to_use, '.pdf'), height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+total_mutations_counting_wes <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl_lrt_only)), 
+                                       aes(total_deps_by_cl_lrt_only, (count), fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 3000)) +
+  theme_bw() +
+  xlab('Number of selective dependencies') + ylab('log10(hotspot/missense/damaging\nWES mutations in COSMIC genes)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+total_mutations_counting_wes
+saveRDS(total_mutations_counting_wes, file = paste0('figures/mutation/depsLRT_v_total_COSMICgenefiltered_mutations_across_lineages_in_WES_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_wes, filename = paste0('figures/mutation/depsLRT_v_total_COSMICgenefiltered_mutations_across_lineages_in_WES_', version_to_use, '.pdf'), height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+### Plot cmparison of peds v adults
+for_plot_count_mutations_deps %<>% mutate(PvA=ifelse(Type=="Fibroblast",Type,PvA)) %>% filter(Type!="Immortalized")
+for_plot_count_mutations_deps$PvA <- factor(for_plot_count_mutations_deps$PvA, levels = c("Fibroblast", "Pediatric", "Adult"))
+for_plot_count_mutations_deps %<>% group_by(PvA) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(PvA,' (n=',n,')')) %>%
+  ungroup()
+total_mutations_counting_wes <- ggplot(for_plot_count_mutations_deps, aes(x = PvA, y = (count), fill=PvA, color=PvA)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  scale_fill_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='black')) +
+  scale_color_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='black')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 3000)) +
+  theme_bw() +
+  xlab('') + ylab('log10(hotspot/missense/damaging\nWES mutations in COSMIC genes)') +
+  scale_x_discrete(labels=setNames(unique(for_plot_count_mutations_deps$label), unique(for_plot_count_mutations_deps$PvA))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means(comparisons = list(c("Pediatric","Fibroblast"), c("Pediatric","Adult"), c("Fibroblast","Adult")), label.y = c(100, 1800, 2800)) 
+
+
+total_mutations_counting_wes
+saveRDS(total_mutations_counting_wes, file = paste0('figures/mutation/peds_v_other_COSMICgenefiltered_mutations_across_lineages_in_WES_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_wes, filename = paste0('figures/mutation/peds_v_other_COSMICgenefiltered_mutations_across_lineages_in_WES_', version_to_use, '.pdf'), height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE)
+
+```
+
+### Number of selective dependencies for lines with WES
+
+```{r include=TRUE}
+# comparing dependencies in peds v adults for lines that have WES
+total_mutations_counting_wes <- ggplot(for_plot_count_mutations_deps %>% filter(PvA!="Fibroblast", !is.na(total_deps_by_cl_lrt_only)), 
+                                       aes(x = PvA, y = total_deps_by_cl_lrt_only, fill=PvA, color=PvA)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  scale_fill_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='grey')) +
+#  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 1000)) +
+  theme_bw() +
+  xlab('') + ylab('Number of selective dependencies') +
+  scale_x_discrete(labels=setNames(unique(for_plot_count_mutations_deps$label), unique(for_plot_count_mutations_deps$PvA))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means()
+
+total_mutations_counting_wes
+saveRDS(total_mutations_counting_wes, file = paste0('figures/mutation/peds_v_other_LRTdeps_WES_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_wes, filename = paste0('figures/mutation/peds_v_other_LRTdeps_WES_', version_to_use, '.pdf'), 
+       height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+
+### Mutation rates in COSMIC genes, pediatric vs other tumors
+
+```{r include=TRUE}
+counts_p_v_a_plot <- mutations %>%
+  filter(!is.na(SangerRecalibWES_AC) | !is.na(CGA_WES_AC)) %>%
+  filter(Entrez_Gene_Id %in% cosmic_latest_download$`Entrez GeneId`) %>%
+  left_join(., mf %>% dplyr::select(Tumor_Sample_Barcode=DepMap_ID, Type, PvA), by='Tumor_Sample_Barcode') %>%
+  group_by(Hugo_Symbol, Entrez_Gene_Id, PvA) %>%
+  dplyr::summarise(count=n()) %>% 
+  spread(., PvA, count) %>%
+  mutate(Pediatric=ifelse(is.na(Pediatric), 0, (Pediatric))) %>%
+  mutate(Adult=ifelse(is.na(Adult), 0, (Adult)))
+
+cosmic_gene_mutation_counts <- ggplot(counts_p_v_a_plot, aes(Pediatric, Adult)) +
+  geom_point(pch=21, alpha=0.75, size=3, color = "grey", fill = "grey") +
+  geom_smooth(method = 'lm', formula = "y ~ x") +
+  geom_text_repel(data=counts_p_v_a_plot %>% filter(Pediatric > 15), aes(label=Hugo_Symbol), size = 2) +
+  theme_bw() +
+  xlab('Pediatric') + ylab('Adult') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+cosmic_gene_mutation_counts
+saveRDS(cosmic_gene_mutation_counts, file = paste0('figures/mutation/COSMICgene_mutation_rates_WES_', version_to_use, '.rds'))
+ggsave(cosmic_gene_mutation_counts, filename = paste0('figures/mutation/COSMICgene_mutation_rates_WES_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+## WGS counts from MAF file {.tabset .tabset-fade}
+
+Mutation plot counting the total number of mutations per cell line using only WGS data.
+
+
+```{r}
+# Count the number of mutations (first group by CL and gene, then by CL and count)
+# If it is blank and not NA, then this mutation is NOT called in that cell line. 
+count_mutation_events_by_cell_line_ALL_WGS <- mutations %>%
+  filter(DepMap_ID %in% mf$DepMap_ID) %>%
+  filter(!is.na(WGS_AC)) %>%
+  filter(WGS_AC != '') %>%
+  group_by(Tumor_Sample_Barcode) %>% 
+  dplyr::summarise(count=n())
+
+count_mutation_events_by_cell_line_cosmicGenes_WGS <- mutations %>%
+  filter(DepMap_ID %in% mf$DepMap_ID) %>%
+  filter(!is.na(WGS_AC)) %>%
+  filter(WGS_AC != '') %>%
+  # Keep only Cosmic genes
+  filter(Entrez_Gene_Id %in% cosmic_latest_download$`Entrez GeneId`) %>%
+  group_by(Tumor_Sample_Barcode) %>% 
+  dplyr::summarise(count=n())
+
+count_mutation_events_by_cell_line_cosmicGenesfiltered_WGS <- mutations %>%
+  filter(DepMap_ID %in% mf$DepMap_ID) %>%
+  filter(!is.na(WGS_AC)) %>%
+  filter(WGS_AC != '') %>%
+  # Keep only Cosmic genes
+  filter(Entrez_Gene_Id %in% cosmic_latest_download$`Entrez GeneId`) %>%
+  # Keep only damaging, missense, or hotspot
+  filter(as.logical(isDeleterious) | Variant_Classification=='Missense_Mutation' | as.logical(isCOSMIChotspot) | as.logical(isTCGAhotspot)) %>%
+  group_by(Tumor_Sample_Barcode) %>% 
+  dplyr::summarise(count=n())
+```
+
+
+Starting from the DepMap mutations MAF file, filter for mutations that were called using WGS. Count the total number of mutations called in each sample and then plot the results. Sort sample by the median count by lineage.
+
+### All WGS
+
+```{r include=TRUE}
+# Simple box plot, coloring the pediatric samples
+for_plot_count_mutations <- count_mutation_events_by_cell_line_ALL_WGS %>%
+  dplyr::rename(DepMap_ID=Tumor_Sample_Barcode) %>%
+  left_join(., mf, by='DepMap_ID') %>%
+  mutate(Group=ifelse(PvA == 'Adult', 'Adult', Type)) %>%
+  group_by(Type) %>%
+  dplyr::mutate(rank=rank(count)/max(n(),2)) %>%
+  ungroup()
+
+# Order by median
+order_lineages_mutational_burden <- for_plot_count_mutations %>%
+  group_by(Type) %>%
+  dplyr::summarise(med=median(count, na.rm = T)) %$%
+  setNames(med, Type) %>% .[order(.)] %>% names()
+
+for_plot_count_mutations %<>% mutate(Type=factor(Type, levels=order_lineages_mutational_burden)) %>%
+  mutate(plot_rank=rank + as.integer(Type)) %>% 
+  group_by(Type) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(Type,' (n=',n,')')) %>%
+  ungroup()
+
+# Get coordindates for tick marks
+cl_order <- for_plot_count_mutations %$% setNames(plot_rank, DepMap_ID) %>% .[order(.)]
+
+labels_coords <- data.frame(DepMap_ID=names(cl_order), val=cl_order) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type) %>% distinct(), by='DepMap_ID') %>%
+  left_join(., for_plot_count_mutations %>% dplyr::select(DepMap_ID, label) %>% distinct(), by='DepMap_ID') %>%
+  group_by(label) %>%
+  dplyr::summarise(v=ifelse(max(val)==min(val), val, (max(val)+floor(min(val)))/2)) %$%
+  setNames(v, label)
+
+for_plot_count_mutations <- for_plot_count_mutations %>%
+  mutate(CL_for_plot=factor(DepMap_ID, levels=names(cl_order)))
+
+# Add the median line segment
+med_segs <- for_plot_count_mutations %>%
+  group_by(Type) %>%
+  dplyr::summarise(
+    x = floor(min(plot_rank))+0.25, xend=ceiling(max(plot_rank))-0.25,
+    y = median(count, na.rm = T)
+  ) %>%
+  mutate(x=ifelse(x > xend, x - 1, x)) %>%
+  arrange(x)
+
+total_mutations_counting_WGS <- ggplot(for_plot_count_mutations, aes(plot_rank, (count), color=Group)) +
+  geom_point(aes(fill=Group), pch=21, alpha=0.75, size=3) +
+  geom_segment(data=med_segs, aes(x=x, xend=xend, y=y, yend=y, group=Type), color='black', size=0.5) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000, 10000), limits = c(50, 15000)) +
+  theme_bw() +
+  xlab('') + ylab('log10(total mutations in WGS)') +
+  scale_x_continuous(breaks=labels_coords, labels=names(labels_coords)) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+total_mutations_counting_WGS
+saveRDS(total_mutations_counting_WGS, file = paste0('figures/mutation/total_mutations_across_lineages_in_WGS_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_WGS, filename = paste0('figures/mutation/total_mutations_across_lineages_in_WGS_', version_to_use, '.pdf'), 
+       height = 14, width=20, units='cm', device='pdf', useDingbats=FALSE)
+
+# combining dependency and mutation
+# Simple scatter plot, coloring the pediatric samples
+for_plot_count_mutations <- count_mutation_events_by_cell_line_ALL_WGS %>%
+  dplyr::rename(DepMap_ID=Tumor_Sample_Barcode) %>%
+  left_join(., mf, by='DepMap_ID') %>%
+  mutate(Group=ifelse(PvA == 'Adult', 'Adult', Type)) %>%
+  mutate(Type=ifelse(grepl('MATCHED', DepMap_ID), 'Normal', Type))
+for_plot_count_mutations_deps <- plyr::join(for_plot_count_mutations, counts_prob_dep_df[,1:3], by="DepMap_ID") %>%
+  arrange(Group)
+
+total_mutations_counting_WGS <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl)), 
+                                       aes(total_deps_by_cl, (count), fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000, 10000), limits = c(50, 15000)) +
+  theme_bw() +
+  xlab('Number of dependencies') + ylab('log10(total mutations in WGS)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+total_mutations_counting_WGS
+saveRDS(total_mutations_counting_WGS, file = paste0('figures/mutation/deps_v_total_mutations_across_lineages_in_WGS_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_WGS, filename = paste0('figures/mutation/deps_v_total_mutations_across_lineages_in_WGS_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+total_mutations_counting_WGS <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl_lrt_only)), 
+                                       aes(total_deps_by_cl_lrt_only, (count), fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000, 10000), limits = c(50, 15000)) +
+  theme_bw() +
+  xlab('Number of selective dependencies') + ylab('log10(total mutations in WGS)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none', 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+total_mutations_counting_WGS
+saveRDS(total_mutations_counting_WGS, file = paste0('figures/mutation/depsLRT_v_total_mutations_across_lineages_in_WGS_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_WGS, filename = paste0('figures/mutation/depsLRT_v_total_mutations_across_lineages_in_WGS_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+### Plot cmparison of peds v adults
+for_plot_count_mutations_deps$PvA <- factor(for_plot_count_mutations_deps$PvA, levels = c("Pediatric", "Adult"))
+for_plot_count_mutations_deps %<>% group_by(PvA) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(PvA,' (n=',n,')')) %>%
+  ungroup()
+total_mutations_counting_WGS <- ggplot(for_plot_count_mutations_deps, aes(x = PvA, y = (count), fill=PvA, color=PvA)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  scale_fill_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000, 10000), limits = c(50, 15000)) +
+  theme_bw() +
+  xlab('') + ylab('log10(total mutations in WGS)') +
+  scale_x_discrete(labels=setNames(unique(for_plot_count_mutations_deps$label), unique(for_plot_count_mutations_deps$PvA))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means()
+
+total_mutations_counting_WGS
+saveRDS(total_mutations_counting_WGS, file = paste0('figures/mutation/peds_v_other_total_mutations_across_lineages_in_WGS_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_WGS, filename = paste0('figures/mutation/peds_v_other_total_mutations_across_lineages_in_WGS_', version_to_use, '.pdf'),
+       height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+### WGS filtered for COSMIC genes
+
+```{r include=TRUE}
+# Simple box plot, coloring the pediatric samples
+for_plot_count_mutations <- count_mutation_events_by_cell_line_cosmicGenes_WGS %>%
+  dplyr::rename(DepMap_ID=Tumor_Sample_Barcode) %>%
+  left_join(., mf, by='DepMap_ID') %>%
+  mutate(Group=ifelse(PvA == 'Adult', 'Adult', Type)) %>%
+  group_by(Type) %>%
+  dplyr::mutate(rank=rank(count)/max(n(),2)) %>%
+  ungroup()
+
+# Order by median
+order_lineages_mutational_burden <- for_plot_count_mutations %>%
+  group_by(Type) %>%
+  dplyr::summarise(med=median(count, na.rm = T)) %$%
+  setNames(med, Type) %>% .[order(.)] %>% names()
+
+for_plot_count_mutations %<>% mutate(Type=factor(Type, levels=order_lineages_mutational_burden)) %>%
+  mutate(plot_rank=rank + as.integer(Type)) %>% 
+  group_by(Type) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(Type,' (n=',n,')')) %>%
+  ungroup()
+
+# Get coordindates for tick marks
+cl_order <- for_plot_count_mutations %$% setNames(plot_rank, DepMap_ID) %>% .[order(.)]
+
+labels_coords <- data.frame(DepMap_ID=names(cl_order), val=cl_order) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type) %>% distinct(), by='DepMap_ID') %>%
+  left_join(., for_plot_count_mutations %>% dplyr::select(DepMap_ID, label) %>% distinct(), by='DepMap_ID') %>%
+  group_by(label) %>%
+  dplyr::summarise(v=ifelse(max(val)==min(val), val, (max(val)+floor(min(val)))/2)) %$%
+  setNames(v, label)
+
+for_plot_count_mutations <- for_plot_count_mutations %>%
+  mutate(CL_for_plot=factor(DepMap_ID, levels=names(cl_order)))
+
+# Add the median line segment
+med_segs <- for_plot_count_mutations %>%
+  group_by(Type) %>%
+  dplyr::summarise(
+    x = floor(min(plot_rank))+0.25, xend=ceiling(max(plot_rank))-0.25,
+    y = median(count, na.rm = T)
+  ) %>%
+  mutate(x=ifelse(x > xend, x - 1, x)) %>%
+  arrange(x)
+
+total_mutations_counting_WGS <- ggplot(for_plot_count_mutations, aes(plot_rank, (count), color=Group)) +
+  geom_point(aes(fill=Group), pch=21, alpha=0.75, size=3) +
+  geom_segment(data=med_segs, aes(x=x, xend=xend, y=y, yend=y, group=Type), color='black', size=0.5) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 1000)) +
+  theme_bw() +
+  xlab('') + ylab('log10(total WGS mutations\nin COSMIC genes)') +
+  scale_x_continuous(breaks=labels_coords, labels=names(labels_coords)) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+total_mutations_counting_WGS
+saveRDS(total_mutations_counting_WGS, file = paste0('figures/mutation/total_COSMICgene_mutations_across_lineages_in_WGS_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_WGS, filename = paste0('figures/mutation/total_COSMICgene_mutations_across_lineages_in_WGS_', version_to_use, '.pdf'), 
+       height = 14, width=20, units='cm', device='pdf', useDingbats=FALSE)
+
+# combining dependency and mutation
+# Simple scatter plot, coloring the pediatric samples
+for_plot_count_mutations <- count_mutation_events_by_cell_line_cosmicGenes_WGS %>%
+  dplyr::rename(DepMap_ID=Tumor_Sample_Barcode) %>%
+  left_join(., mf, by='DepMap_ID') %>%
+  mutate(Group=ifelse(PvA == 'Adult', 'Adult', Type)) %>%
+  mutate(Type=ifelse(grepl('MATCHED', DepMap_ID), 'Normal', Type))
+for_plot_count_mutations_deps <- plyr::join(for_plot_count_mutations, counts_prob_dep_df[,1:3], by="DepMap_ID") %>%
+  arrange(Group)
+
+total_mutations_counting_WGS <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl)), 
+                                       aes(total_deps_by_cl, (count), fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 1000)) +
+  theme_bw() +
+  xlab('Number of dependencies') + ylab('log10(total WGS mutations\nin COSMIC genes)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+total_mutations_counting_WGS
+saveRDS(total_mutations_counting_WGS, file = paste0('figures/mutation/deps_v_total_COSMICgene_mutations_across_lineages_in_WGS_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_WGS, filename = paste0('figures/mutation/deps_v_total_COSMICgene_mutations_across_lineages_in_WGS_', version_to_use, '.pdf'),
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+total_mutations_counting_WGS <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl_lrt_only)), 
+                                       aes(total_deps_by_cl_lrt_only, (count), fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 1000)) +
+  theme_bw() +
+  xlab('Number of selective dependencies') + ylab('log10(total WGS mutations\nin COSMIC genes)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+total_mutations_counting_WGS
+saveRDS(total_mutations_counting_WGS, file = paste0('figures/mutation/depsLRT_v_total_COSMICgene_mutations_across_lineages_in_WGS_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_WGS, filename = paste0('figures/mutation/depsLRT_v_total_COSMICgene_mutations_across_lineages_in_WGS_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+### Plot cmparison of peds v adults
+for_plot_count_mutations_deps$PvA <- factor(for_plot_count_mutations_deps$PvA, levels = c("Pediatric", "Adult"))
+for_plot_count_mutations_deps %<>% group_by(PvA) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(PvA,' (n=',n,')')) %>%
+  ungroup()
+total_mutations_counting_WGS <- ggplot(for_plot_count_mutations_deps, aes(x = PvA, y = (count), fill=PvA, color=PvA)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  scale_fill_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 1000)) +
+  theme_bw() +
+  xlab('') + ylab('log10(total WGS mutations\nin COSMIC genes)') +
+  scale_x_discrete(labels=setNames(unique(for_plot_count_mutations_deps$label), unique(for_plot_count_mutations_deps$PvA))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means()
+
+total_mutations_counting_WGS
+saveRDS(total_mutations_counting_WGS, file = paste0('figures/mutation/peds_v_other_COSMICgene_mutations_across_lineages_in_WGS_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_WGS, filename = paste0('figures/mutation/peds_v_other_COSMICgene_mutations_across_lineages_in_WGS_', version_to_use, '.pdf'),
+       height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+
+### WGS filtered for mutations in COSMIC genes
+
+```{r include=TRUE}
+# Simple box plot, coloring the pediatric samples
+for_plot_count_mutations <- count_mutation_events_by_cell_line_cosmicGenesfiltered_WGS %>%
+  dplyr::rename(DepMap_ID=Tumor_Sample_Barcode) %>%
+  left_join(., mf, by='DepMap_ID') %>%
+  mutate(Group=ifelse(PvA == 'Adult', 'Adult', Type)) %>%
+  group_by(Type) %>%
+  dplyr::mutate(rank=rank(count)/max(n(),2)) %>%
+  ungroup()
+
+# Order by median
+order_lineages_mutational_burden <- for_plot_count_mutations %>%
+  group_by(Type) %>%
+  dplyr::summarise(med=median(count, na.rm = T)) %$%
+  setNames(med, Type) %>% .[order(.)] %>% names()
+
+for_plot_count_mutations %<>% mutate(Type=factor(Type, levels=order_lineages_mutational_burden)) %>%
+  mutate(plot_rank=rank + as.integer(Type)) %>% 
+  group_by(Type) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(Type,' (n=',n,')')) %>%
+  ungroup()
+
+# Get coordindates for tick marks
+cl_order <- for_plot_count_mutations %$% setNames(plot_rank, DepMap_ID) %>% .[order(.)]
+
+labels_coords <- data.frame(DepMap_ID=names(cl_order), val=cl_order) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type) %>% distinct(), by='DepMap_ID') %>%
+  left_join(., for_plot_count_mutations %>% dplyr::select(DepMap_ID, label) %>% distinct(), by='DepMap_ID') %>%
+  group_by(label) %>%
+  dplyr::summarise(v=ifelse(max(val)==min(val), val, (max(val)+floor(min(val)))/2)) %$%
+  setNames(v, label)
+
+for_plot_count_mutations <- for_plot_count_mutations %>%
+  mutate(CL_for_plot=factor(DepMap_ID, levels=names(cl_order)))
+
+# Add the median line segment
+med_segs <- for_plot_count_mutations %>%
+  group_by(Type) %>%
+  dplyr::summarise(
+    x = floor(min(plot_rank))+0.25, xend=ceiling(max(plot_rank))-0.25,
+    y = median(count, na.rm = T)
+  ) %>%
+  mutate(x=ifelse(x > xend, x - 1, x)) %>%
+  arrange(x)
+
+total_mutations_counting_WGS <- ggplot(for_plot_count_mutations, aes(plot_rank, (count), color=Group)) +
+  geom_point(aes(fill=Group), pch=21, alpha=0.75, size=3) +
+  geom_segment(data=med_segs, aes(x=x, xend=xend, y=y, yend=y, group=Type), color='black', size=0.5) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 1000)) +
+  theme_bw() +
+  xlab('') + ylab('log10(hotspot/missense/damaging\nWGS mutations in COSMIC genes)') +
+  scale_x_continuous(breaks=labels_coords, labels=names(labels_coords)) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+total_mutations_counting_WGS
+saveRDS(total_mutations_counting_WGS, file = paste0('figures/mutation/total_COSMICgenefiltered_mutations_across_lineages_in_WGS_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_WGS, filename = paste0('figures/mutation/total_COSMICgenefiltered_mutations_across_lineages_in_WGS_', version_to_use, '.pdf'), 
+       height = 14, width=20, units='cm', device='pdf', useDingbats=FALSE)
+
+# combining dependency and mutation
+# Simple scatter plot, coloring the pediatric samples
+for_plot_count_mutations <- count_mutation_events_by_cell_line_cosmicGenesfiltered_WGS %>%
+  dplyr::rename(DepMap_ID=Tumor_Sample_Barcode) %>%
+  left_join(., mf, by='DepMap_ID') %>%
+  mutate(Group=ifelse(PvA == 'Adult', 'Adult', Type)) %>%
+  mutate(Type=ifelse(grepl('MATCHED', DepMap_ID), 'Normal', Type))
+for_plot_count_mutations_deps <- plyr::join(for_plot_count_mutations, counts_prob_dep_df[,1:3], by="DepMap_ID") %>%
+  arrange(Group)
+
+total_mutations_counting_WGS <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl)), 
+                                       aes(total_deps_by_cl, (count), fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 1000)) +
+  theme_bw() +
+  xlab('Number of dependencies') + ylab('log10(hotspot/missense/damaging\nWGS mutations in COSMIC genes)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+total_mutations_counting_WGS
+saveRDS(total_mutations_counting_WGS, file = paste0('figures/mutation/deps_v_total_COSMICgenefiltered_mutations_across_lineages_in_WGS_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_WGS, filename = paste0('figures/mutation/deps_v_total_COSMICgenefiltered_mutations_across_lineages_in_WGS_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+total_mutations_counting_WGS <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl_lrt_only)), 
+                                       aes(total_deps_by_cl_lrt_only, (count), fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 1000)) +
+  theme_bw() +
+  xlab('Number of selective dependencies') + ylab('log10(hotspot/missense/damaging\nWGS mutations in COSMIC genes)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+total_mutations_counting_WGS
+saveRDS(total_mutations_counting_WGS, file = paste0('figures/mutation/depsLRT_v_total_COSMICgenefiltered_mutations_across_lineages_in_WGS_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_WGS, filename = paste0('figures/mutation/depsLRT_v_total_COSMICgenefiltered_mutations_across_lineages_in_WGS_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+### Plot cmparison of peds v adults
+for_plot_count_mutations_deps$PvA <- factor(for_plot_count_mutations_deps$PvA, levels = c("Pediatric", "Adult"))
+for_plot_count_mutations_deps %<>% group_by(PvA) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(PvA,' (n=',n,')')) %>%
+  ungroup()
+total_mutations_counting_WGS <- ggplot(for_plot_count_mutations_deps, aes(x = PvA, y = (count), fill=PvA, color=PvA)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  scale_fill_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 1000)) +
+  theme_bw() +
+  xlab('') + ylab('log10(hotspot/missense/damaging\nWGS mutations in COSMIC genes)') +
+  scale_x_discrete(labels=setNames(unique(for_plot_count_mutations_deps$label), unique(for_plot_count_mutations_deps$PvA))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means()
+
+total_mutations_counting_WGS
+saveRDS(total_mutations_counting_WGS, file = paste0('figures/mutation/peds_v_other_COSMICgenefiltered_mutations_across_lineages_in_WGS_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_WGS, filename = paste0('figures/mutation/peds_v_other_COSMICgenefiltered_mutations_across_lineages_in_WGS_', version_to_use, '.pdf'), 
+       height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+
+### Number of selective dependencies for lines with WGS
+
+```{r include=TRUE}
+# comparing dependencies in peds v adults for lines that have WGS
+total_mutations_counting_WGS <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl_lrt_only)), 
+                                       aes(x = PvA, y = total_deps_by_cl_lrt_only, fill=PvA, color=PvA)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  scale_fill_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='grey')) +
+  theme_bw() +
+  xlab('') + ylab('Number of selective dependencies') +
+  scale_x_discrete(labels=setNames(unique(for_plot_count_mutations_deps$label), unique(for_plot_count_mutations_deps$PvA))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means()
+
+total_mutations_counting_WGS
+saveRDS(total_mutations_counting_WGS, file = paste0('figures/mutation/peds_v_other_LRTdeps_WGS_', version_to_use, '.rds'))
+ggsave(total_mutations_counting_WGS, filename = paste0('figures/mutation/peds_v_other_LRTdeps_WGS_', version_to_use, '.pdf'), 
+       height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+
+
+## Running MutSig {.tabset .tabset-fade}
+
+
+```{r}
+### Prepare subset MAFs for MutSig2CV
+if(!dir.exists('MutSig2CV')) { dir.create('MutSig2CV') }
+if(!dir.exists('MutSig2CV/data')) { dir.create('MutSig2CV/data') }
+if(!dir.exists('MutSig2CV/output')) { dir.create('MutSig2CV/output') }
+
+for (t in c('CGA_WES_AC', 'SangerRecalibWES_AC')) {
+  if(!file.exists(paste0('MutSig2CV/data/', t, '_only.maf')))
+  {
+    mut_subset <- mutations %>%
+      filter(!is.na(get(t)) & get(t) != "") %>% 
+      dplyr::rename(Tumor_Allele=Tumor_Seq_Allele1)
+    
+    write.table(
+      mut_subset,
+      file = paste0('MutSig2CV/data/', t, '_only.maf'),
+      sep = '\t', quote = FALSE, row.names = FALSE
+    )
+  }
+}
+
+if(!file.exists(paste0('MutSig2CV/data/cosmic_only.maf')))
+{
+  in_cosmic_only <- mutations %>%
+    filter(Hugo_Symbol %in% cosmic_latest_download$`Gene Symbol`) %>% 
+    dplyr::rename(Tumor_Allele=Tumor_Seq_Allele1)
+  
+  write.table(in_cosmic_only, file = 'MutSig2CV/data/cosmic_only.maf', sep = '\t', quote = FALSE, row.names = FALSE)
+}
+```
+
+MutSig2CV was run on samples separately for MAFs for Broad WES, Sanger WES, and COSMIC only mutations. This was done by downloading MutSig2CV from https://software.broadinstitute.org/cancer/cga/sites/default/files/data/tools/mutsig/MutSig2CV.tar.gz. Following the README, this was installed along with the MCR in a VM running linux (VirtualBox 6.1.6 with 12GB RAM, Ubuntu 18.04.03 LTS). 
+
+MutSig2CV removes cell lines that appear to be duplicates (having almost identical mutational patterns) and then infers a mutation rate. These mutation rates were used for the plot below.
+
+### MutSig on all WES
+
+```{r include=TRUE, results='asis'}
+if(!file.exists('MutSig2CV/output/CGA_WES_AC_only/patient_counts_and_rates.txt') | !file.exists('MutSig2CV/output/SangerRecalibWES_AC_only/patient_counts_and_rates.txt'))
+{
+  cat(colorize("#### MutSig2CV output not found!", "red")) 
+  MutSig2CV_output_exists <- FALSE
+} else
+{
+  MutSig2CV_output_exists <- TRUE
+}
+```
+
+```{r include=TRUE, eval=MutSig2CV_output_exists}
+# Use the MutSig data
+mutsig_broad_wes_only <- read_tsv('MutSig2CV/output/CGA_WES_AC_only/patient_counts_and_rates.txt', col_types = list(
+  name = col_character(),
+  nmut = col_double(),
+  n_coding = col_double(),
+  n_flank = col_double(),
+  n_coding_nonsilent = col_double(),
+  fracflank = col_double(),
+  callscheme_name = col_character(),
+  cov_idx = col_double(),
+  N_tot = col_double(),
+  nsil_tot = col_double(),
+  nnon_tot = col_double(),
+  n_tot = col_double(),
+  rate_sil = col_double(),
+  rate_non = col_double(),
+  rate_tot = col_double(),
+  log_rate_tot = col_double(),
+  n_ind = col_double(),
+  N_ind = col_double(),
+  rate_ind = col_double()
+))
+mutsig_sanger_wes_only <- read_tsv('MutSig2CV/output/SangerRecalibWES_AC_only/patient_counts_and_rates.txt', col_types = list(
+  name = col_character(),
+  nmut = col_double(),
+  n_coding = col_double(),
+  n_flank = col_double(),
+  n_coding_nonsilent = col_double(),
+  fracflank = col_double(),
+  callscheme_name = col_character(),
+  cov_idx = col_double(),
+  N_tot = col_double(),
+  nsil_tot = col_double(),
+  nnon_tot = col_double(),
+  n_tot = col_double(),
+  rate_sil = col_double(),
+  rate_non = col_double(),
+  rate_tot = col_double(),
+  log_rate_tot = col_double(),
+  n_ind = col_double(),
+  N_ind = col_double(),
+  rate_ind = col_double()
+))
+
+# Combine rates output
+in_both_mutsigs <- mutsig_broad_wes_only$name %>% .[which(. %in% mutsig_sanger_wes_only$name)]
+combined_wes_only <- rbind(mutsig_broad_wes_only, mutsig_sanger_wes_only %>% filter(!(name %in% in_both_mutsigs)))
+
+# Rates to use for plot
+rates_using <- combined_wes_only %>% dplyr::select(name, rate_tot)
+
+# Simple box plot, coloring the pediatric samples
+for_plot_count_mutations <- rates_using %>%
+  dplyr::rename(DepMap_ID=name) %>%
+  dplyr::select(DepMap_ID, rate_tot) %>%
+  left_join(., mf, by='DepMap_ID') %>%
+  mutate(Group=ifelse(PvA == 'Adult', 'Adult', Type)) %>%
+  group_by(Type) %>%
+  dplyr::mutate(rank=rank(rate_tot)/max(n(),2)) %>%
+  ungroup()
+
+# Order by median
+ordered_types <- for_plot_count_mutations %>%
+  group_by(Type) %>% dplyr::summarise(med=median(rate_tot, na.rm = T)) %$%
+  setNames(med, Type) %>% .[order(.)] %>% names()
+
+for_plot_count_mutations %<>% mutate(Type=factor(Type, levels=ordered_types)) %>%
+  mutate(plot_rank=rank + as.integer(Type)) %>% 
+  group_by(Type) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(Type,' (n=',n,')')) %>%
+  ungroup()
+
+# Get coordindates for tick marks
+cl_order <- for_plot_count_mutations %$% setNames(plot_rank, DepMap_ID) %>% .[order(.)]
+
+labels_coords <- data.frame(DepMap_ID=names(cl_order), val=cl_order) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type) %>% distinct(), by='DepMap_ID') %>%
+  left_join(., for_plot_count_mutations %>% dplyr::select(DepMap_ID, label) %>% distinct(), by='DepMap_ID') %>%
+  group_by(label) %>%
+  dplyr::summarise(v=ifelse(max(val)==min(val), val, (max(val)+floor(min(val)))/2)) %$%
+  setNames(v, label)
+
+mutsig_rates_for_plot <- for_plot_count_mutations %>%
+  mutate(CL_for_plot=factor(DepMap_ID, levels=names(cl_order)))
+
+# Add the median line segment
+med_segs <- mutsig_rates_for_plot %>%
+  group_by(Type) %>%
+  dplyr::summarise(
+    x = floor(min(plot_rank))+0.25, xend=ceiling(max(plot_rank))-0.25,
+    y = median(rate_tot, na.rm = T)
+  ) %>%
+  mutate(x=ifelse(x > xend, x - 1, x)) %>%
+  arrange(x)
+
+mut_plot_with_mutsig <- ggplot(mutsig_rates_for_plot, aes(plot_rank, (rate_tot*10^6), color=Group)) +
+  geom_point(aes(fill=Group), pch=21, alpha=0.75, size=3) +
+  geom_segment(data=med_segs, aes(x=x, xend=xend, y=(y*10^6), yend=(y*10^6), group=Type), color='black', size=0.5) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(0.1, 1, 10, 100, 1000, 10000), limits = c(1, 3000)) +
+  theme_bw() +
+  xlab('') + ylab('MutSig2CV mutations per MB') +
+  scale_x_continuous(breaks=labels_coords, labels=names(labels_coords)) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+mut_plot_with_mutsig
+saveRDS(mut_plot_with_mutsig, file = paste0('figures/mutation/mutsig_rates_in_WES_', version_to_use, '.rds'))
+ggsave(mut_plot_with_mutsig, filename = paste0('figures/mutation/mutsig_rates_in_WES_', version_to_use, '.pdf'), 
+       height = 14, width=20, units='cm', device='pdf', useDingbats=FALSE)
+
+# combining dependency and mutation
+# Simple scatter plot, coloring the pediatric samples
+for_plot_count_mutations <- rates_using %>%
+  dplyr::rename(DepMap_ID=name) %>%
+  left_join(., mf, by='DepMap_ID') %>%
+  mutate(Group=ifelse(PvA == 'Adult', 'Adult', Type)) %>%
+  mutate(Type=ifelse(grepl('MATCHED', DepMap_ID), 'Normal', Type))
+for_plot_count_mutations_deps <- plyr::join(for_plot_count_mutations, counts_prob_dep_df[,1:3], by="DepMap_ID") %>%
+  arrange(Group)
+
+mut_plot_with_mutsig <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl)), 
+                               aes(total_deps_by_cl, (rate_tot*10^6), fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(0.1, 1, 10, 100, 1000, 10000), limits = c(1, 3000)) +
+  theme_bw() +
+  xlab('Number of dependencies') + ylab('MutSig2CV mutations per MB') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+mut_plot_with_mutsig
+
+saveRDS(mut_plot_with_mutsig, file = paste0('figures/mutation/deps_v_mutsig_across_lineages_in_WES_', version_to_use, '.rds'))
+ggsave(mut_plot_with_mutsig, filename = paste0('figures/mutation/deps_v_mutsig_across_lineages_in_WES_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+mut_plot_with_mutsig <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl_lrt_only)), 
+                               aes(total_deps_by_cl_lrt_only, (rate_tot*10^6), fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(0.1, 1, 10, 100, 1000, 10000), limits = c(1, 3000)) +
+  theme_bw() +
+  xlab('Number of selective dependencies') + ylab('MutSig2CV mutations per MB') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none', 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+mut_plot_with_mutsig
+
+saveRDS(mut_plot_with_mutsig, file = paste0('figures/mutation/depsLRT_v_mutsig_across_lineages_in_WES_', version_to_use, '.rds'))
+ggsave(mut_plot_with_mutsig, filename = paste0('figures/mutation/depsLRT_v_mutsig_across_lineages_in_WES_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+mut_plot_with_mutsig <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl)) %>%
+                                 dplyr::mutate(shape_to_use = ifelse(grepl("CCLF", CCLE_name), "CCLF", "Other")), 
+                               aes(total_deps_by_cl, (rate_tot*10^6), fill=Group, color=Group, 
+                                   shape=shape_to_use, alpha=shape_to_use, size=shape_to_use)) +
+  geom_point() +
+  geom_text_repel(data = for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl)) %>%
+                                 dplyr::filter(grepl("CCLF", CCLE_name)),
+                  mapping = aes(x = total_deps_by_cl, y = (rate_tot*10^6), label = gsub("_.*", "", CCLE_name), 
+                                fill = NULL, color = NULL, shape = NULL, alpha = NULL, size = NULL)) +
+  scale_size_manual(values=c('Other'=3, 'CCLF'=5)) + 
+  scale_alpha_manual(values=c('Other'=0.25, 'CCLF'=1)) +
+  scale_shape_manual(values=c('Other'=21, 'CCLF'=24)) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(0.1, 1, 10, 100, 1000, 10000), limits = c(1, 3000)) +
+  theme_bw() +
+  xlab('Number of dependencies') + ylab('MutSig2CV mutations per MB') +
+  ggtitle('Highlighting recently derived cell lines') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none', 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL, shape=NULL, alpha=NULL, size=NULL), method = "lm", formula = "y ~ x")
+
+mut_plot_with_mutsig
+
+saveRDS(mut_plot_with_mutsig, file = paste0('figures/mutation/deps_v_mutsig_across_lineages_in_WES_', version_to_use, '_highlight_CCLF.rds'))
+ggsave(mut_plot_with_mutsig, filename = paste0('figures/mutation/deps_v_mutsig_across_lineages_in_WES_', version_to_use, '_highlight_CCLF.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+mut_plot_with_mutsig <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl_lrt_only)) %>%
+                                 dplyr::mutate(shape_to_use = ifelse(grepl("CCLF", CCLE_name), "CCLF", "Other")), 
+                               aes(total_deps_by_cl_lrt_only, (rate_tot*10^6), fill=Group, color=Group, 
+                                   shape=shape_to_use, alpha=shape_to_use, size=shape_to_use)) +
+  geom_point() +
+  geom_text_repel(data = for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl_lrt_only)) %>%
+                                 dplyr::filter(grepl("CCLF", CCLE_name)),
+                  mapping = aes(x = total_deps_by_cl_lrt_only, y = (rate_tot*10^6), label = gsub("_.*", "", CCLE_name), 
+                                fill = NULL, color = NULL, shape = NULL, alpha = NULL, size = NULL)) +
+  scale_size_manual(values=c('Other'=3, 'CCLF'=5)) + 
+  scale_alpha_manual(values=c('Other'=0.25, 'CCLF'=1)) +
+  scale_shape_manual(values=c('Other'=21, 'CCLF'=24)) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(0.1, 1, 10, 100, 1000, 10000), limits = c(1, 3000)) +
+  theme_bw() +
+  xlab('Number of selective dependencies') + ylab('MutSig2CV mutations per MB') +
+  ggtitle('Highlighting recently derived cell lines') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none', 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL, shape=NULL, alpha=NULL, size=NULL), method = "lm", formula = "y ~ x")
+
+mut_plot_with_mutsig
+
+saveRDS(mut_plot_with_mutsig, file = paste0('figures/mutation/depsLRT_v_mutsig_across_lineages_in_WES_', version_to_use, '_highlight_CCLF.rds'))
+ggsave(mut_plot_with_mutsig, filename = paste0('figures/mutation/depsLRT_v_mutsig_across_lineages_in_WES_', version_to_use, '_highlight_CCLF.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+### Plot cmparison of peds v adults
+mutsig_rates_for_plot %<>% mutate(PvA=ifelse(Type=="Fibroblast","Fibroblast",PvA)) %>% filter(Type!="Immortalized")
+mutsig_rates_for_plot$PvA <- factor(mutsig_rates_for_plot$PvA, levels = c("Fibroblast", "Pediatric", "Adult"))
+mutsig_rates_for_plot %<>% group_by(PvA) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(PvA,' (n=',n,')')) %>%
+  ungroup()
+mut_plot_with_mutsig <- ggplot(mutsig_rates_for_plot, aes(x = PvA, y = (rate_tot*10^6), fill=PvA, color=PvA)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  scale_fill_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='black')) +
+  scale_color_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='black')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 3000)) +
+  theme_bw() +
+  xlab('') + ylab('MutSig2CV mutations per MB') +
+  scale_x_discrete(labels=setNames(unique(mutsig_rates_for_plot$label), unique(mutsig_rates_for_plot$PvA))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means(comparisons = list(c("Pediatric","Fibroblast"), c("Pediatric","Adult"), c("Fibroblast","Adult")), label.y = c(100, 1000, 2800)) 
+
+
+mut_plot_with_mutsig
+
+saveRDS(mut_plot_with_mutsig, file = paste0('figures/mutation/peds_v_other_mutsig_across_lineages_in_WES_', version_to_use, '.rds'))
+ggsave(mut_plot_with_mutsig, filename = paste0('figures/mutation/peds_v_other_mutsig_across_lineages_in_WES_', version_to_use, '.pdf'), 
+       height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+
+### MutSig on COSMIC genes
+
+```{r include=TRUE, results='asis'}
+if(!file.exists('MutSig2CV/output/cosmic_only/patient_counts_and_rates.txt'))
+{
+  cat(colorize("#### MutSig2CV output not found!", "red")) 
+  MutSig2CV_output_exists_COSMIC <- FALSE
+} else
+{
+  MutSig2CV_output_exists_COSMIC <- TRUE
+}
+```
+
+```{r include=TRUE, eval=MutSig2CV_output_exists_COSMIC}
+# Use the MutSig data
+mutsig_cosmic_only <- read_tsv('MutSig2CV/output/cosmic_only/patient_counts_and_rates.txt', col_types = list(
+  name = col_character(),
+  nmut = col_double(),
+  n_coding = col_double(),
+  n_flank = col_double(),
+  n_coding_nonsilent = col_double(),
+  fracflank = col_double(),
+  callscheme_name = col_character(),
+  cov_idx = col_double(),
+  N_tot = col_double(),
+  nsil_tot = col_double(),
+  nnon_tot = col_double(),
+  n_tot = col_double(),
+  rate_sil = col_double(),
+  rate_non = col_double(),
+  rate_tot = col_double(),
+  log_rate_tot = col_double(),
+  n_ind = col_double(),
+  N_ind = col_double(),
+  rate_ind = col_double()
+))
+
+# Rates to use for plot
+rates_using_cosmic <- mutsig_cosmic_only %>% dplyr::select(name, rate_tot)
+
+# Simple box plot, coloring the pediatric samples
+for_plot_count_mutations <- rates_using_cosmic %>%
+  dplyr::rename(DepMap_ID=name) %>%
+  dplyr::select(DepMap_ID, rate_tot) %>%
+  left_join(., mf, by='DepMap_ID') %>%
+  mutate(Group=ifelse(PvA == 'Adult', 'Adult', Type)) %>%
+  group_by(Type) %>%
+  dplyr::mutate(rank=rank(rate_tot)/max(n(),2)) %>%
+  ungroup()
+
+# Order by median
+ordered_types <- for_plot_count_mutations %>%
+  group_by(Type) %>% dplyr::summarise(med=median(rate_tot, na.rm = T)) %$%
+  setNames(med, Type) %>% .[order(.)] %>% names()
+
+for_plot_count_mutations %<>% mutate(Type=factor(Type, levels=ordered_types)) %>%
+  mutate(plot_rank=rank + as.integer(Type)) %>% 
+  group_by(Type) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(Type,' (n=',n,')')) %>%
+  ungroup()
+
+# Get coordindates for tick marks
+cl_order <- for_plot_count_mutations %$% setNames(plot_rank, DepMap_ID) %>% .[order(.)]
+
+labels_coords <- data.frame(DepMap_ID=names(cl_order), val=cl_order) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type) %>% distinct(), by='DepMap_ID') %>%
+  left_join(., for_plot_count_mutations %>% dplyr::select(DepMap_ID, label) %>% distinct(), by='DepMap_ID') %>%
+  group_by(label) %>%
+  dplyr::summarise(v=ifelse(max(val)==min(val), val, (max(val)+floor(min(val)))/2)) %$%
+  setNames(v, label)
+
+mutsig_rates_for_plot <- for_plot_count_mutations %>%
+  mutate(CL_for_plot=factor(DepMap_ID, levels=names(cl_order)))
+
+# Add the median line segment
+med_segs <- mutsig_rates_for_plot %>%
+  group_by(Type) %>%
+  dplyr::summarise(
+    x = floor(min(plot_rank))+0.25, xend=ceiling(max(plot_rank))-0.25,
+    y = median(rate_tot, na.rm = T)
+  ) %>%
+  mutate(x=ifelse(x > xend, x - 1, x)) %>%
+  arrange(x)
+
+mut_plot_with_mutsig <- ggplot(mutsig_rates_for_plot, aes(plot_rank, (rate_tot*10^6), color=Group)) +
+  geom_point(aes(fill=Group), pch=21, alpha=0.75, size=3) +
+  geom_segment(data=med_segs, aes(x=x, xend=xend, y=(y*10^6), yend=(y*10^6), group=Type), color='black', size=0.5) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(0.1, 1, 10, 100, 1000, 10000), limits = c(0.1, 500)) +
+  theme_bw() +
+  xlab('') + ylab('MutSig2CV mutations per MB\nin COSMIC genes') +
+  scale_x_continuous(breaks=labels_coords, labels=names(labels_coords)) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+mut_plot_with_mutsig
+
+saveRDS(mut_plot_with_mutsig, file = paste0('figures/mutation/mutsig_rates_in_COSMIC_', version_to_use, '.rds'))
+ggsave(mut_plot_with_mutsig, filename = paste0('figures/mutation/mutsig_rates_in_COSMIC_', version_to_use, '.pdf'), 
+       height = 14, width=20, units='cm', device='pdf', useDingbats=FALSE)
+
+# combining dependency and mutation
+# Simple scatter plot, coloring the pediatric samples
+for_plot_count_mutations <- rates_using_cosmic %>%
+  dplyr::rename(DepMap_ID=name) %>%
+  left_join(., mf, by='DepMap_ID') %>%
+  mutate(Group=ifelse(PvA == 'Adult', 'Adult', Type)) %>%
+  mutate(Type=ifelse(grepl('MATCHED', DepMap_ID), 'Normal', Type))
+for_plot_count_mutations_deps <- plyr::join(for_plot_count_mutations, counts_prob_dep_df[,1:3], by="DepMap_ID") %>%
+  arrange(Group)
+
+mut_plot_with_mutsig <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl)), 
+                               aes(total_deps_by_cl, (rate_tot*10^6), fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(0.1, 1, 10, 100, 1000, 10000), limits = c(0.1, 500)) +
+  theme_bw() +
+  xlab('Number of dependencies') + ylab('MutSig2CV mutations per MB\nin COSMIC genes') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+mut_plot_with_mutsig
+
+saveRDS(mut_plot_with_mutsig, file = paste0('figures/mutation/deps_v_mutsig_across_lineages_in_COSMIC_', version_to_use, '.rds'))
+ggsave(mut_plot_with_mutsig, filename = paste0('figures/mutation/deps_v_mutsig_across_lineages_in_COSMIC_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+mut_plot_with_mutsig <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl_lrt_only)), 
+                               aes(total_deps_by_cl_lrt_only, (rate_tot*10^6), fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(0.1, 1, 10, 100, 1000, 10000), limits = c(0.1, 500)) +
+  theme_bw() +
+  xlab('Number of selective dependencies') + ylab('MutSig2CV mutations per MB\nin COSMIC genes') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none', 
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+mut_plot_with_mutsig
+
+saveRDS(mut_plot_with_mutsig, file = paste0('figures/mutation/depsLRT_v_mutsig_across_lineages_in_COSMIC_', version_to_use, '.rds'))
+ggsave(mut_plot_with_mutsig, filename = paste0('figures/mutation/depsLRT_v_mutsig_across_lineages_in_COSMIC_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+### Plot cmparison of peds v adults
+mutsig_rates_for_plot %<>% mutate(PvA=ifelse(Type=="Fibroblast","Fibroblast",PvA)) %>% filter(Type!="Immortalized")
+mutsig_rates_for_plot$PvA <- factor(mutsig_rates_for_plot$PvA, levels = c("Fibroblast", "Pediatric", "Adult"))
+mutsig_rates_for_plot %<>% group_by(PvA) %>%
+  mutate(n = n()) %>% 
+  mutate(label = paste0(PvA,' (n=',n,')')) %>%
+  ungroup()
+mut_plot_with_mutsig <- ggplot(mutsig_rates_for_plot, aes(x = PvA, y = (rate_tot*10^6), fill=PvA, color=PvA)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  scale_fill_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='black')) +
+  scale_color_manual(values=c('Pediatric'='red', 'Adult'='grey', 'Fibroblast'='black')) +
+  coord_trans(y = "log10") + scale_y_continuous(breaks = c(0.1, 1, 10, 100, 1000, 10000), limits = c(0.1, 500)) +
+  theme_bw() +
+  xlab('') + ylab('MutSig2CV mutations per MB\nin COSMIC genes') +
+  scale_x_discrete(labels=setNames(unique(mutsig_rates_for_plot$label), unique(mutsig_rates_for_plot$PvA))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means(comparisons = list(c("Pediatric","Fibroblast"), c("Pediatric","Adult"), c("Fibroblast","Adult")), label.y = c(12, 275, 450)) 
+
+mut_plot_with_mutsig
+
+saveRDS(mut_plot_with_mutsig, file = paste0('figures/mutation/peds_v_other_mutsig_across_lineages_in_COSMIC_', version_to_use, '.rds'))
+ggsave(mut_plot_with_mutsig, filename = paste0('figures/mutation/peds_v_other_mutsig_across_lineages_in_COSMIC_', version_to_use, '.pdf'), 
+       height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+## Recurrent mutations within pediatric cell lines vs adult cell lines
+
+### Overview of gene selection
+
+MutSig2CV analyzes somatic point mutations discovered in DNA sequencing, identifying genes mutated more often than expected by chance given inferred background mutation processes.  MutSig2CV consists of three independent statistical tests, described briefly below:
+
+Abundance (CV): The most important step for inferring genes' mutational significance is to properly classify whether the gene is highly mutated relative to some background mutation rate (BMR), which varies on a macroscopic level across patients and genes and on a microscopic level across sequence contexts.  MutSig accounts for all three of these to renormalize BMR on a per-gene, -patient, and -context level.
+
+Clustering (CL): Genes often harbor mutational hotspots, specific sites that are frequently mutated.  While abundance calculations bin mutations on the gene level, clustering bins mutations on the local site level, which allows MutSig to differentiate between genes with uniformly distributed mutations and genes with localized hotspots, assigning higher significance to the latter.
+
+Conservation (FN): MutSig uses evolutionary conservation as a proxy for determining the functional significance of a mutated site.  It assumes that genetic sites highly conserved across vertebrates have greater functional significance than weakly conserved sites.  MutSig assigns a higher significance to genes that experience frequent mutations in highly conserved sites.
+
+### Top mutated COSMIC genes in pediatric vs adult tumor types
+
+In the plots below, we look only at the COSMIC genes and ignore any of the significance thresholds from MutSig2CV. The frequency of mutations in these genes is determined by counting the number of cell lines that had this mutation and normalizing to the total number of cell lines evaluated.
+
+The table below outlines all of the genes that passed this criteria (hover over column names for meaning):
+
+```{r include=TRUE, eval=MutSig2CV_output_exists_COSMIC}
+mutsig_sig_genes <- read_tsv('MutSig2CV/output/cosmic_only/sig_genes.txt', col_types = list(
+  rank = col_double(),
+  gene = col_character(),
+  longname = col_character(),
+  codelen = col_double(),
+  nnei = col_double(),
+  nncd = col_double(),
+  nsil = col_double(),
+  nmis = col_double(),
+  nstp = col_double(),
+  nspl = col_double(),
+  nind = col_double(),
+  nnon = col_double(),
+  npat = col_double(),
+  nsite = col_double(),
+  pCV = col_double(),
+  pCL = col_double(),
+  pFN = col_double(),
+  p = col_double(),
+  q = col_double()
+))
+
+# Use only the COSMIC genes here as well
+significant_genes_to_use <- cosmic_latest_download$`Gene Symbol`
+
+col_tooltips = htmltools::withTags(table(
+  class = 'display',
+  thead(
+    tr(
+      th('rank', title = 'Position of the gene as sorted ascending by p-/q-value.'),
+      th('gene', title = 'HUGO symbol of the gene (RefSeq hg19)'),
+      th('longname', title = 'HUGO description of the gene'),
+      th('codelen', title = 'ORF length of the gene'),
+      th('nnei', title = 'Number of neighboring genes in the bagel used to estimate BMR'),
+      th('nncd', title = 'Number of noncoding mutations'),
+      th('nsil', title = 'Number of silent (synonymous) mutations in the gene'),
+      th('nmis', title = 'Number of missense mutations in the gene'),
+      th('nstp', title = 'Number of nonsense mutations in the gene'),
+      th('nspl', title = 'Number of splice site mutations in the gene (defined as +/- 2 bases from the donor/acceptor site)'),
+      th('nind', title = 'Number of insertions or deletions in the gene'),
+      th('nnon', title = 'Number of nonsilent mutations in the gene (including all indels and splice site mutations, even if the codon change is synonymous in the latter case)'),
+      th('npat', title = 'Number of patients with mutations in the gene'),
+      th('nsite', title = 'Number of uniquely mutated sites in the gene (does not multiply count recurrently mutated positions)'),
+      th('pCV', title = 'Abundance p-value'),
+      th('pCL', title = 'Clustering p-value'),
+      th('pFN', title = 'Functional (conservation) p-value'),
+      th('p', title = 'Overall p-value obtained from Fisher combination of pCV, pCL, and pFN'),
+      th('q', title = 'FDR-corrected (Benjamini-Hochberg) overall p-value')
+    )
+  )
+))
+
+mutsig_sig_genes %>%
+  filter(gene %in% significant_genes_to_use) %>% 
+  mutate_if(is.numeric, list(~ round(., digits = 3))) %>%
+  datatable(options=list(scrollX=TRUE), rownames=F, container = col_tooltips)
+```
+
+The plot below shows % of cell lines with a damaging, missense, or hotspot mutation in the given gene. 
+
+```{r, eval=MutSig2CV_output_exists_COSMIC}
+# Use mutsig to only pull significant mutations
+per_gene_patient_counts <- fread('MutSig2CV/output/cosmic_only/per_gene.mutation_counts.txt')
+
+per_gene_patient_counts_sig_genes <- per_gene_patient_counts %>% 
+  filter(name %in% significant_genes_to_use) %>% 
+  gather(DepMap_ID, Num_mutations, -name, -cov_gidx, -longname, -chr, -start, -end, -len, -gc) %>%
+  mutate(DepMap_ID = gsub("[.]", "-", DepMap_ID)) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type), by='DepMap_ID') %>%
+  group_by(name, len, Type) %>%
+  mutate(Num_cls=n()) %>%
+  group_by(name, len, Type, Num_cls) %>%
+  filter(Num_mutations > 0) %>%
+  dplyr::summarise(count=n()) %>%
+  dplyr::rename(Hugo_Symbol=name)
+
+# Only use CLs not called duplicates by MutSig
+cls_to_use_mut <- rates_using_cosmic %$% name
+
+counts_by_type <- per_gene_patient_counts_sig_genes %>% 
+  ungroup() %>%
+  filter(!is.na(Type)) %>%
+  distinct(Type, Num_cls) %$% 
+  setNames(Num_cls, Type)
+
+mutation_counts_by_gene_COSMIC <- per_gene_patient_counts_sig_genes <- per_gene_patient_counts %>% 
+  filter(name %in% significant_genes_to_use) %>% 
+  gather(DepMap_ID, Num_mutations, -name, -cov_gidx, -longname, -chr, -start, -end, -len, -gc) %>%
+  mutate(DepMap_ID = gsub("[.]", "-", DepMap_ID), Hugo_Symbol=name) %>%
+  left_join(., mf %>% dplyr::select(DepMap_ID, Type), by='DepMap_ID') %>%
+  filter(Num_mutations > 0) %>%
+  distinct(Type, DepMap_ID, Hugo_Symbol)
+```
+
+
+```{r}
+# Mutation plot generator given gene list and tumor type list (based on the count by tumor type list above)
+mutation_plot_generator <- function(mutation_set, tumor_type_list, top_n_arg=10, gene_list=c(), smgs=c(), cols_for_plot=c(), grey_out=c()) {
+  
+  if (length(tumor_type_list %>% .[which(!(. %in% names(counts_by_type)))]) > 0) {
+    # print('This type is missing')
+    # print(tumor_type_list %>% .[which(!(. %in% names(counts_by_type)))])
+  }
+  
+  dataset_for_mutation_plot <- mutation_set %>% 
+    filter(Type %in% tumor_type_list)
+
+  if (length(smgs) > 0) {
+    dataset_for_mutation_plot %<>% filter(Hugo_Symbol %in% smgs)
+  }
+  
+  total_cls <- dataset_for_mutation_plot %$% unique(DepMap_ID) %>% length()
+  dataset_for_mutation_plot %<>% group_by(Hugo_Symbol, Type) %>% 
+    dplyr::summarise(count=n()) %>%
+    mutate(total=count/total_cls)
+  
+  gene_order <- dataset_for_mutation_plot %>% 
+    group_by(Hugo_Symbol) %>% 
+    dplyr::summarise(total=sum(count)) %$% 
+    setNames(total, Hugo_Symbol)
+
+  gene_list_to_use <- names(gene_order[order(-gene_order)])[1:top_n_arg]
+  if (length(gene_list) > 0) {
+    gene_list_to_use = c(gene_list)
+  }
+  
+  dataset_for_mutation_plot %<>% filter(Hugo_Symbol %in% gene_list_to_use) %>% 
+    mutate(Gene=factor(Hugo_Symbol, levels=gene_list_to_use))
+  
+  dataset_for_mutation_plot %$% unique(Hugo_Symbol)
+  
+  g1 <- ggplot(dataset_for_mutation_plot, aes(Gene, total, fill=Type)) + 
+    geom_bar(stat = 'identity', color='transparent', fill='transparent') +
+    geom_bar(data=dataset_for_mutation_plot %>% filter((Gene %in% grey_out)), stat = 'identity', color='#dfdcdf', fill='#dfdcdf') +
+    geom_bar(data=dataset_for_mutation_plot %>% filter(!(Gene %in% grey_out)), stat = 'identity') +
+    xlab('') +
+    ylab('Normalized fraction [%]') +
+    scale_y_continuous(expand = c(0,0)) +
+    theme_Publication() +
+    theme(
+      axis.text.x = element_text(hjust=1, angle=90, vjust=0.5),
+      axis.line.y = element_line(size = 0.5, linetype = "solid", colour = "black"),   
+      # legend.position = c(1,1),
+      # legend.justification = c(0,1),
+      legend.justification = 'top',
+      legend.title = element_blank(),
+      panel.grid = element_blank(),
+      panel.border = element_blank(),
+      # plot.margin=unit(c(1,4,0,0.5),"cm"),
+      legend.margin=margin(t = 0, unit='cm')
+    )
+  
+    if (length(cols_for_plot) > 0) {
+      g1 <- g1 + scale_fill_manual(values = cols_for_plot)
+    }
+  return(g1)
+}
+```
+
+### {.tabset .tabset-fade}
+
+#### Top mutated genes in pediatric lines (MutSig COSMIC only) 
+
+```{r include=TRUE, eval=MutSig2CV_output_exists_COSMIC}
+g_ped <- mutation_plot_generator(
+  mutation_set = mutation_counts_by_gene_COSMIC, 
+  tumor_type_list = pediatric_types, 
+  smgs = significant_genes_to_use, 
+  cols_for_plot = color_for_subtypes_vector)
+
+g_ped
+```
+
+```{r include=TRUE, eval=MutSig2CV_output_exists_COSMIC}
+mutation_counts_by_gene_COSMIC %>% 
+  filter(Type %in% pediatric_types) %>% 
+  group_by(Hugo_Symbol) %>%
+  mutate(nmut = n()) %>%
+  ungroup() %>%
+  mutate(nlines = length(unique(DepMap_ID))) %>%
+  dplyr::select(Hugo_Symbol, nmut, nlines) %>%
+  unique() %>%
+  arrange(-nmut) %>%
+  datatable()
+
+write.table(mutation_counts_by_gene_COSMIC %>% 
+  filter(Type %in% pediatric_types) %>% 
+  group_by(Hugo_Symbol) %>%
+  mutate(nmut = n()) %>%
+  ungroup() %>%
+  mutate(nlines = length(unique(DepMap_ID))) %>%
+  dplyr::select(Hugo_Symbol, nmut, nlines) %>%
+  unique() %>%
+  arrange(-nmut),
+  file = "figures/mutation/MutSigCOSMICrates_per_gene.txt",
+  sep = "\t", row.names = F)
+```
+
+
+#### Top mutated genes in adult lines (MutSig COSMIC) 
+
+```{r include=TRUE, eval=MutSig2CV_output_exists_COSMIC}
+g_adult <- mutation_plot_generator(
+  mutation_set = mutation_counts_by_gene_COSMIC, 
+  tumor_type_list = adult_cancers_to_use,
+  smgs = significant_genes_to_use,
+  cols_for_plot = complete_type_colors
+)
+
+g_adult
+```
+
+
+## Dependency and mutation rates vs confounders {.tabset .tabset-fade}
+
+Look at the relationship of dependency and mutation rate with NNMD (separation of positive and negative controls) and CAS9 activity (measured as % GFP remaining after CRISPR-Cas9 directed GFP editting, i.e. lower number indicates higher CAS9 activity). 
+
+```{r}
+for_plot_count_mutations <- count_mutation_events_by_cell_line_ALL_WES %>%
+  dplyr::rename(DepMap_ID=Tumor_Sample_Barcode) %>%
+  left_join(., mf, by='DepMap_ID') %>%
+  left_join(., sample_info %>% dplyr::select(DepMap_ID, Achilles_n_replicates, 
+                                             cell_line_NNMD, cas9_activity, culture_type, culture_medium, 
+                                             sample_collection_site, primary_or_metastasis), by='DepMap_ID') %>%
+  mutate(Group=ifelse(PvA == 'Adult', 'Adult', Type))
+
+if (exists("rates_using"))
+{
+  for_plot_count_mutations %<>% left_join(., rates_using %>% dplyr::rename(DepMap_ID=name), by="DepMap_ID")
+}
+
+for_plot_count_mutations_deps <- plyr::join(for_plot_count_mutations, counts_prob_dep_df[,1:3], by="DepMap_ID") %>%
+  arrange(Group) %>%
+  mutate(CAS9=as.num(cas9_activity))
+
+for_plot_count_mutations_deps %<>% dplyr::mutate(primary_or_metastasis = ifelse(primary_or_metastasis == "", "Unknown", primary_or_metastasis)) 
+```
+
+### Selective dependencies vs NNMD
+
+```{r include=TRUE}
+deps_vs_nnmd <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl)), 
+                       aes(total_deps_by_cl_lrt_only, cell_line_NNMD, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  theme_bw() +
+  xlab('Number of selective dependencies') + ylab('Cell line NNMD') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+deps_vs_nnmd
+
+saveRDS(deps_vs_nnmd, file = paste0('figures/mutation/deps_v_NNMD_', version_to_use, '.rds'))
+ggsave(deps_vs_nnmd, filename = paste0('figures/mutation/deps_v_NNMD_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+### WES mutation rate vs NNMD
+
+```{r include=TRUE}
+muts_vs_nnmd <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(cell_line_NNMD)), 
+                       aes((count), cell_line_NNMD, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_x_log10(breaks = c(1, 10, 100, 1000, 10000), limits = c(25, 30000)) +
+  theme_bw() +
+  xlab('log10(total mutations in WES)') + ylab('Cell line NNMD') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x") 
+
+muts_vs_nnmd
+
+saveRDS(muts_vs_nnmd, file = paste0('figures/mutation/WES_muts_v_NNMD_', version_to_use, '.rds'))
+ggsave(muts_vs_nnmd, filename = paste0('figures/mutation/WES_muts_v_NNMD_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+### MutSig2CV mutation rate vs NNMD
+
+```{r include=TRUE, eval=MutSig2CV_output_exists}
+muts_vs_nnmd <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(cell_line_NNMD) & !is.na(rate_tot)), 
+                       aes((rate_tot*10^6), cell_line_NNMD, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_x_log10(breaks = c(1, 10, 100, 1000), limits = c(1, 3000)) +
+  theme_bw() +
+  xlab('MutSig2CV mutations per MB') + ylab('Cell line NNMD') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x") 
+
+muts_vs_nnmd
+
+saveRDS(muts_vs_nnmd, file = paste0('figures/mutation/mutsig_v_NNMD_', version_to_use, '.rds'))
+ggsave(muts_vs_nnmd, filename = paste0('figures/mutation/mutsig_v_NNMD_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+### Selective dependencies vs Cas9
+
+```{r include=TRUE}
+deps_vs_nnmd <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(total_deps_by_cl_lrt_only) & !is.na(CAS9)), 
+                       aes(total_deps_by_cl_lrt_only, CAS9, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  theme_bw() +
+  xlab('Number of selective dependencies') + ylab('% GFP remaining (1 - Cas9 activity)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+deps_vs_nnmd
+saveRDS(deps_vs_nnmd, file = paste0('figures/mutation/deps_v_Cas9_', version_to_use, '.rds'))
+ggsave(deps_vs_nnmd, filename = paste0('figures/mutation/deps_v_Cas9_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+### WES mutation rate vs Cas9
+
+```{r include=TRUE}
+muts_vs_nnmd <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(CAS9)), 
+                       aes((count), CAS9, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_x_log10(breaks = c(1, 10, 100, 1000, 10000), limits = c(25, 30000)) +
+  theme_bw() +
+  xlab('log10(total mutations in WES)') + ylab('% GFP remaining (1 - Cas9 activity)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+muts_vs_nnmd
+saveRDS(muts_vs_nnmd, file = paste0('figures/mutation/WES_muts_v_Cas9_', version_to_use, '.rds'))
+ggsave(muts_vs_nnmd, filename = paste0('figures/mutation/WES_muts_v_Cas9_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+### MutSig2CV mutation rate vs Cas9
+
+```{r include=TRUE, eval=MutSig2CV_output_exists}
+muts_vs_nnmd <- ggplot(for_plot_count_mutations_deps %>% dplyr::filter(!is.na(CAS9) & !is.na(rate_tot)), 
+                       aes((rate_tot*10^6), CAS9, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_x_log10(breaks = c(1, 10, 100, 1000), limits = c(1, 3000)) +
+  theme_bw() +
+  xlab('MutSig2CV mutations per MB') + ylab('% GFP remaining (1 - Cas9 activity)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+muts_vs_nnmd
+
+saveRDS(muts_vs_nnmd, file = paste0('figures/mutation/mutsig_v_Cas9_', version_to_use, '.rds'))
+ggsave(muts_vs_nnmd, filename = paste0('figures/mutation/mutsig_v_Cas9_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+### Selective dependencies vs growth
+
+```{r include=TRUE}
+doubling_times <- fread('input_files/doubling_times.csv') %>% 
+  filter(!grepl("days", Doubling_Time_Hours)) %>%
+  mutate(Doubling_Time_Hours = as.numeric(Doubling_Time_Hours))
+
+for_plot_count_mutations_deps_2 <- left_join(for_plot_count_mutations_deps, doubling_times, by = "DepMap_ID")
+
+deps_vs_growth <- ggplot(for_plot_count_mutations_deps_2 %>% dplyr::filter(!is.na(total_deps_by_cl), !is.na(Doubling_Time_Hours)), 
+                       aes(total_deps_by_cl_lrt_only, Doubling_Time_Hours, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  theme_bw() +
+  xlab('Number of selective dependencies') + ylab('Doubling time (hours)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+deps_vs_growth
+
+saveRDS(deps_vs_growth, file = paste0('figures/mutation/deps_v_growth_', version_to_use, '.rds'))
+ggsave(deps_vs_growth, filename = paste0('figures/mutation/deps_v_growth_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+### WES mutation rate vs growth
+
+```{r include=TRUE}
+muts_vs_growth <- ggplot(for_plot_count_mutations_deps_2 %>% dplyr::filter(!is.na(Doubling_Time_Hours)), 
+                       aes((count), Doubling_Time_Hours, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_x_log10(breaks = c(1, 10, 100, 1000, 10000), limits = c(25, 30000)) +
+  theme_bw() +
+  xlab('log10(total mutations in WES)') + ylab('Doubling time (hours)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x") 
+
+muts_vs_growth
+
+saveRDS(muts_vs_growth, file = paste0('figures/mutation/WES_muts_v_growth_', version_to_use, '.rds'))
+ggsave(muts_vs_growth, filename = paste0('figures/mutation/WES_muts_v_growth_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+### MutSig2CV mutation rate vs growth
+
+```{r include=TRUE, eval=MutSig2CV_output_exists}
+muts_vs_growth <- ggplot(for_plot_count_mutations_deps_2 %>% dplyr::filter(!is.na(Doubling_Time_Hours) & !is.na(rate_tot)), 
+                       aes((rate_tot*10^6), Doubling_Time_Hours, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_x_log10(breaks = c(1, 10, 100, 1000), limits = c(1, 3000)) +
+  theme_bw() +
+  xlab('MutSig2CV mutations per MB') + ylab('Doubling time (hours)') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x") 
+
+muts_vs_growth
+
+saveRDS(muts_vs_growth, file = paste0('figures/mutation/mutsig_v_growth_', version_to_use, '.rds'))
+ggsave(muts_vs_growth, filename = paste0('figures/mutation/mutsig_v_growth_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+### Dependency rate vs media
+
+```{r include=TRUE}
+for_plot_count_mutations_deps_2 <- for_plot_count_mutations_deps %>%
+  dplyr::filter(!is.na(total_deps_by_cl_lrt_only)) %>%
+  mutate(media = ifelse(grepl("DMEM", culture_medium),
+                        "DMEM-based",
+                        ifelse(grepl("RPMI", culture_medium),
+                               "RPMI-based",
+                               "Other"))) %>%
+  mutate(media = factor(media, levels = list("DMEM-based", "RPMI-based", "Other"))) %>%
+  group_by(media) %>%
+  mutate(n = n()) %>% 
+  mutate(media_label = paste0(media,' (n=',n,')')) %>%
+  ungroup()
+
+deps_vs_media <- ggplot(for_plot_count_mutations_deps_2 %>% dplyr::filter(!is.na(total_deps_by_cl_lrt_only)), 
+                       aes(x = media, y = total_deps_by_cl_lrt_only, fill=media, color=media)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  scale_fill_manual(values=c("red", "black", "gray") %>% set_names(., unique(for_plot_count_mutations_deps$media))) +
+  scale_color_manual(values=c("red", "black", "gray") %>% set_names(., unique(for_plot_count_mutations_deps$media))) +
+  theme_bw() +
+  ylab('Number of selective dependencies') + xlab('') +
+  scale_x_discrete(labels=setNames(unique(for_plot_count_mutations_deps_2$media_label),
+                                   unique(for_plot_count_mutations_deps_2$media))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  coord_cartesian(clip = "off") +
+  stat_compare_means(comparisons = list(c("DMEM-based","RPMI-based"), c("DMEM-based","Other"), c("RPMI-based","Other")), label.y = c(90, 100, 110)) 
+
+deps_vs_media
+
+saveRDS(deps_vs_media, file = paste0('figures/mutation/deps_v_media_', version_to_use, '.rds'))
+ggsave(deps_vs_media, filename = paste0('figures/mutation/deps_v_media_', version_to_use, '.pdf'), 
+       height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+### WES mutation rate vs media
+
+```{r include=TRUE}
+for_plot_count_mutations_deps_2 <- for_plot_count_mutations_deps %>%
+  dplyr::filter(!is.na(count)) %>%
+  mutate(media = ifelse(grepl("DMEM", culture_medium),
+                        "DMEM-based",
+                        ifelse(grepl("RPMI", culture_medium),
+                               "RPMI-based",
+                               "Other"))) %>%
+  mutate(media = factor(media, levels = list("DMEM-based", "RPMI-based", "Other"))) %>%
+  group_by(media) %>%
+  mutate(n = n()) %>% 
+  mutate(media_label = paste0(media,' (n=',n,')')) %>%
+  ungroup()
+
+mut_vs_media <- ggplot(for_plot_count_mutations_deps_2, 
+                       aes(x = media, y = (count), fill=media, color=media)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  coord_trans(y = "log10", clip = "off") + scale_y_continuous(breaks = c(1, 10, 100, 1000, 10000), limits = c(25, 30000)) +
+  scale_fill_manual(values=c("red", "black", "gray") %>% set_names(., unique(for_plot_count_mutations_deps$media))) +
+  scale_color_manual(values=c("red", "black", "gray") %>% set_names(., unique(for_plot_count_mutations_deps$media))) +
+  theme_bw() +
+  ylab('log10(total mutations in WES)') + xlab('') +
+  scale_x_discrete(labels=setNames(unique(for_plot_count_mutations_deps_2$media_label),
+                                   unique(for_plot_count_mutations_deps_2$media))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means(comparisons = list(c("DMEM-based","RPMI-based"), c("DMEM-based","Other"), c("RPMI-based","Other")), label.y = c(6000, 28000, 12000)) 
+
+mut_vs_media
+
+saveRDS(mut_vs_media, file = paste0('figures/mutation/WES_muts_v_media_', version_to_use, '.rds'))
+ggsave(mut_vs_media, filename = paste0('figures/mutation/WES_muts_v_media_', version_to_use, '.pdf'), 
+       height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+
+### MutSig2CV mutation rate vs media
+
+```{r include=TRUE, eval=MutSig2CV_output_exists}
+for_plot_count_mutations_deps_2 <- for_plot_count_mutations_deps %>%
+  dplyr::filter(!is.na(rate_tot)) %>%
+  mutate(media = ifelse(grepl("DMEM", culture_medium),
+                        "DMEM-based",
+                        ifelse(grepl("RPMI", culture_medium),
+                               "RPMI-based",
+                               "Other"))) %>%
+  mutate(media = factor(media, levels = list("DMEM-based", "RPMI-based", "Other"))) %>%
+  group_by(media) %>%
+  mutate(n = n()) %>% 
+  mutate(media_label = paste0(media,' (n=',n,')')) %>%
+  ungroup()
+
+mut_vs_media <- ggplot(for_plot_count_mutations_deps_2, 
+                       aes(x = media, y = (rate_tot*10^6), fill=media, color=media)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  coord_trans(y = "log10", clip = "off") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 3000)) +
+  scale_fill_manual(values=c("red", "black", "gray") %>% set_names(., unique(for_plot_count_mutations_deps$media))) +
+  scale_color_manual(values=c("red", "black", "gray") %>% set_names(., unique(for_plot_count_mutations_deps$media))) +
+  theme_bw() +
+  ylab('MutSig2CV mutations per MB') + xlab('') +
+  scale_x_discrete(labels=setNames(unique(for_plot_count_mutations_deps_2$media_label),
+                                   unique(for_plot_count_mutations_deps_2$media))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means(comparisons = list(c("DMEM-based","RPMI-based"), c("DMEM-based","Other"), c("RPMI-based","Other")), label.y = c(500, 2000, 1000)) 
+
+mut_vs_media
+
+saveRDS(mut_vs_media, file = paste0('figures/mutation/mutsig_v_media_', version_to_use, '.rds'))
+ggsave(mut_vs_media, filename = paste0('figures/mutation/mutsig_v_media_', version_to_use, '.pdf'), 
+       height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+
+### Dependency rate vs primary/metastasis
+
+```{r include=TRUE}
+for_plot_count_mutations_deps_2 <- for_plot_count_mutations_deps %>%
+  dplyr::filter(!is.na(total_deps_by_cl_lrt_only)) %>%
+  group_by(primary_or_metastasis) %>%
+  mutate(n = n()) %>% 
+  mutate(primary_or_metastasis_label = paste0(primary_or_metastasis,' (n=',n,')')) %>%
+  ungroup()
+
+deps_vs_mets <- ggplot(for_plot_count_mutations_deps_2 %>% dplyr::filter(!is.na(total_deps_by_cl_lrt_only)), 
+                       aes(x = primary_or_metastasis, y = total_deps_by_cl_lrt_only, fill=primary_or_metastasis, color=primary_or_metastasis)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  scale_fill_manual(values=c("red", "black", "gray") %>% set_names(., unique(for_plot_count_mutations_deps$primary_or_metastasis))) +
+  scale_color_manual(values=c("red", "black", "gray") %>% set_names(., unique(for_plot_count_mutations_deps$primary_or_metastasis))) +
+  theme_bw() +
+  ylab('Number of selective dependencies') + xlab('') +
+  scale_x_discrete(labels=setNames(unique(for_plot_count_mutations_deps_2$primary_or_metastasis_label),
+                                   unique(for_plot_count_mutations_deps_2$primary_or_metastasis))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  coord_cartesian(clip = "off") +
+  stat_compare_means(comparisons = list(c("Metastasis","Primary"), c("Primary","Unknown"), c("Metastasis","Unknown")), label.y = c(90, 100, 110)) 
+
+deps_vs_mets
+
+saveRDS(deps_vs_mets, file = paste0('figures/mutation/deps_v_mets_', version_to_use, '.rds'))
+ggsave(deps_vs_mets, filename = paste0('figures/mutation/deps_v_mets_', version_to_use, '.pdf'), 
+       height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+### WES mutation rate vs primary/metastasis
+
+```{r include=TRUE}
+for_plot_count_mutations_deps_2 <- for_plot_count_mutations_deps %>%
+  dplyr::filter(!is.na(count)) %>%
+  group_by(primary_or_metastasis) %>%
+  mutate(n = n()) %>% 
+  mutate(primary_or_metastasis_label = paste0(primary_or_metastasis,' (n=',n,')')) %>%
+  ungroup()
+
+mut_vs_mets <- ggplot(for_plot_count_mutations_deps_2, 
+                       aes(x = primary_or_metastasis, y = (count), fill=primary_or_metastasis, color=primary_or_metastasis)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  coord_trans(y = "log10", clip = "off") + scale_y_continuous(breaks = c(1, 10, 100, 1000, 10000), limits = c(25, 30000)) +
+  scale_fill_manual(values=c("red", "black", "gray") %>% set_names(., unique(for_plot_count_mutations_deps$primary_or_metastasis))) +
+  scale_color_manual(values=c("red", "black", "gray") %>% set_names(., unique(for_plot_count_mutations_deps$primary_or_metastasis))) +
+  theme_bw() +
+  ylab('log10(total mutations in WES)') + xlab('') +
+  scale_x_discrete(labels=setNames(unique(for_plot_count_mutations_deps_2$primary_or_metastasis_label),
+                                   unique(for_plot_count_mutations_deps_2$primary_or_metastasis))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means(comparisons = list(c("Metastasis","Primary"), c("Primary","Unknown"), c("Metastasis","Unknown")), label.y = c(14000, 16000, 25000)) 
+
+mut_vs_mets
+
+saveRDS(mut_vs_mets, file = paste0('figures/mutation/WES_muts_v_mets_', version_to_use, '.rds'))
+ggsave(mut_vs_mets, filename = paste0('figures/mutation/WES_muts_v_mets_', version_to_use, '.pdf'), 
+       height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+
+### MutSig2CV mutation rate vs primary/metastasis
+
+```{r include=TRUE, eval=MutSig2CV_output_exists}
+for_plot_count_mutations_deps_2 <- for_plot_count_mutations_deps %>%
+  dplyr::filter(!is.na(rate_tot)) %>%
+  group_by(primary_or_metastasis) %>%
+  mutate(n = n()) %>% 
+  mutate(primary_or_metastasis_label = paste0(primary_or_metastasis,' (n=',n,')')) %>%
+  ungroup()
+
+mut_vs_mets <- ggplot(for_plot_count_mutations_deps_2, 
+                       aes(x = primary_or_metastasis, y = (rate_tot*10^6), fill=primary_or_metastasis, color=primary_or_metastasis)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  coord_trans(y = "log10", clip = "off") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 3000)) +
+  scale_fill_manual(values=c("red", "black", "gray") %>% set_names(., unique(for_plot_count_mutations_deps$primary_or_metastasis))) +
+  scale_color_manual(values=c("red", "black", "gray") %>% set_names(., unique(for_plot_count_mutations_deps$primary_or_metastasis))) +
+  theme_bw() +
+  ylab('MutSig2CV mutations per MB') + xlab('') +
+  scale_x_discrete(labels=setNames(unique(for_plot_count_mutations_deps_2$primary_or_metastasis_label),
+                                   unique(for_plot_count_mutations_deps_2$primary_or_metastasis))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means(comparisons = list(c("Metastasis","Primary"), c("Primary","Unknown"), c("Metastasis","Unknown")), label.y = c(500, 1000, 2000)) 
+
+mut_vs_mets
+
+saveRDS(mut_vs_mets, file = paste0('figures/mutation/mutsig_v_mets_', version_to_use, '.rds'))
+ggsave(mut_vs_mets, filename = paste0('figures/mutation/mutsig_v_mets_', version_to_use, '.pdf'), 
+       height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+### Selective dependencies vs treatment for pediatric tumors
+
+```{r include=TRUE}
+treatment <- fread('input_files/pediatric_cell_line_treatment_from_literature.csv') %>%
+  dplyr::mutate(treatment = ifelse(grepl("unknown", treatment), "Unknown",
+                               ifelse(grepl("none", treatment), "None", "Pre-treated")
+                               ))
+
+for_plot_count_mutations_deps_2 <- left_join(for_plot_count_mutations_deps, treatment, by = "DepMap_ID") %>%
+  dplyr::filter(!is.na(total_deps_by_cl_lrt_only)) %>%
+  dplyr::filter(!is.na(treatment)) %>%
+  group_by(treatment) %>%
+  mutate(n = n()) %>% 
+  mutate(treatment_label = paste0(treatment,' (n=',n,')')) %>%
+  ungroup()
+
+deps_vs_tx <- ggplot(for_plot_count_mutations_deps_2 %>% dplyr::filter(!is.na(total_deps_by_cl_lrt_only)), 
+                       aes(x = treatment, y = total_deps_by_cl_lrt_only, fill=treatment, color=treatment)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  scale_fill_manual(values=c("red", "black", "gray") %>% set_names(., unique(for_plot_count_mutations_deps$treatment))) +
+  scale_color_manual(values=c("red", "black", "gray") %>% set_names(., unique(for_plot_count_mutations_deps$treatment))) +
+  theme_bw() +
+  ylab('Number of selective dependencies') + xlab('') +
+  scale_x_discrete(labels=setNames(unique(for_plot_count_mutations_deps_2$treatment_label),
+                                   unique(for_plot_count_mutations_deps_2$treatment))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  coord_cartesian(clip = "off") +
+  stat_compare_means(comparisons = list(c("None","Pre-treated"), c("None","Unknown"), c("Pre-treated","Unknown")), label.y = c(80, 70, 60)) 
+
+suppressWarnings(print(deps_vs_tx))
+
+saveRDS(deps_vs_tx, file = paste0('figures/mutation/deps_v_tx_', version_to_use, '.rds'))
+suppressWarnings(ggsave(deps_vs_tx, filename = paste0('figures/mutation/deps_v_tx_', version_to_use, '.pdf'), 
+       height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE))
+```
+
+### WES mutation rate vs treatment for pediatric tumors
+
+```{r include=TRUE}
+for_plot_count_mutations_deps_2 <- left_join(for_plot_count_mutations_deps, treatment, by = "DepMap_ID") %>%
+  dplyr::filter(!is.na(count)) %>%
+  dplyr::filter(!is.na(treatment)) %>%
+  group_by(treatment) %>%
+  mutate(n = n()) %>% 
+  mutate(treatment_label = paste0(treatment,' (n=',n,')')) %>%
+  ungroup()
+
+mut_vs_tx <- ggplot(for_plot_count_mutations_deps_2, 
+                       aes(x = treatment, y = (count), fill=treatment, color=treatment)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  coord_trans(y = "log10", clip = "off") + scale_y_continuous(breaks = c(1, 10, 100, 1000, 10000), limits = c(25, 30000)) +
+  scale_fill_manual(values=c("red", "black", "gray") %>% set_names(., unique(for_plot_count_mutations_deps$treatment))) +
+  scale_color_manual(values=c("red", "black", "gray") %>% set_names(., unique(for_plot_count_mutations_deps$treatment))) +
+  theme_bw() +
+  ylab('log10(total mutations in WES)') + xlab('') +
+  scale_x_discrete(labels=setNames(unique(for_plot_count_mutations_deps_2$treatment_label),
+                                   unique(for_plot_count_mutations_deps_2$treatment))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means(comparisons = list(c("None","Pre-treated"), c("None","Unknown"), c("Pre-treated","Unknown")), label.y = c(1000, 5000, 10000)) 
+
+suppressWarnings(print(mut_vs_tx))
+
+saveRDS(mut_vs_tx, file = paste0('figures/mutation/WES_muts_v_tx_', version_to_use, '.rds'))
+suppressWarnings(ggsave(mut_vs_tx, filename = paste0('figures/mutation/WES_muts_v_tx_', version_to_use, '.pdf'), 
+       height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE))
+```
+
+
+### MutSig2CV mutation rate vs treatment for pediatric tumors
+
+```{r include=TRUE, eval=MutSig2CV_output_exists}
+for_plot_count_mutations_deps_2 <- left_join(for_plot_count_mutations_deps, treatment, by = "DepMap_ID") %>%
+  dplyr::filter(!is.na(rate_tot)) %>%
+  dplyr::filter(!is.na(treatment)) %>%
+  group_by(treatment) %>%
+  mutate(n = n()) %>% 
+  mutate(treatment_label = paste0(treatment,' (n=',n,')')) %>%
+  ungroup()
+
+mut_vs_tx <- ggplot(for_plot_count_mutations_deps_2, 
+                       aes(x = treatment, y = (rate_tot*10^6), fill=treatment, color=treatment)) +
+  geom_violin(alpha=0.75) + 
+  geom_boxplot(pch=21, fill = "white", color = "black", width = 0.1) + 
+  coord_trans(y = "log10", clip = "off") + scale_y_continuous(breaks = c(1, 10, 100, 1000), limits = c(1, 3000)) +
+  scale_fill_manual(values=c("red", "black", "gray") %>% set_names(., unique(for_plot_count_mutations_deps$treatment))) +
+  scale_color_manual(values=c("red", "black", "gray") %>% set_names(., unique(for_plot_count_mutations_deps$treatment))) +
+  theme_bw() +
+  ylab('MutSig2CV mutations per MB') + xlab('') +
+  scale_x_discrete(labels=setNames(unique(for_plot_count_mutations_deps_2$treatment_label),
+                                   unique(for_plot_count_mutations_deps_2$treatment))) +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',
+        panel.border = element_blank(), panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_compare_means(comparisons = list(c("None","Pre-treated"), c("None","Unknown"), c("Pre-treated","Unknown")), label.y = c(50, 100, 200)) 
+
+suppressWarnings(print(mut_vs_tx))
+
+saveRDS(mut_vs_tx, file = paste0('figures/mutation/mutsig_v_tx_', version_to_use, '.rds'))
+suppressWarnings(ggsave(mut_vs_tx, filename = paste0('figures/mutation/mutsig_v_tx_', version_to_use, '.pdf'), 
+       height = 14, width=10, units='cm', device='pdf', useDingbats=FALSE))
+```
+
+### Selective dependencies vs expression outliers
+
+```{r include=TRUE}
+gene_expression_zmad <- t(apply(gene_expression, 1, function(x) { (x - median(x,na.rm=T)) / mad(x,na.rm=T) } ))
+
+expression_outliers <- as.data.frame(cbind(rownames(gene_expression_zmad), rowSums(gene_expression_zmad > 1.5)), stringsAsFactors = F) %>%
+  magrittr::set_colnames(., c("DepMap_ID", "expression_outliers")) %>%
+  dplyr::mutate(expression_outliers = as.numeric(expression_outliers))
+
+for_plot_count_mutations_deps_2 <- left_join(for_plot_count_mutations_deps, expression_outliers, by = "DepMap_ID")
+
+deps_vs_exp <- ggplot(for_plot_count_mutations_deps_2 %>% dplyr::filter(!is.na(total_deps_by_cl), !is.na(expression_outliers)), 
+                       aes(total_deps_by_cl_lrt_only, expression_outliers, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  theme_bw() +
+  xlab('Number of selective dependencies') + ylab('Number of expression outliers') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+deps_vs_exp
+
+saveRDS(deps_vs_exp, file = paste0('figures/mutation/deps_v_exp_', version_to_use, '.rds'))
+ggsave(deps_vs_exp, filename = paste0('figures/mutation/deps_v_exp_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+### WES mutation rate vs expression outliers
+
+```{r include=TRUE}
+muts_vs_exp <- ggplot(for_plot_count_mutations_deps_2 %>% dplyr::filter(!is.na(expression_outliers)), 
+                       aes((count), expression_outliers, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_x_log10(breaks = c(1, 10, 100, 1000, 10000), limits = c(25, 30000)) +
+  theme_bw() +
+  xlab('log10(total mutations in WES)') + ylab('Number of expression outliers') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x") 
+
+muts_vs_exp
+
+saveRDS(muts_vs_exp, file = paste0('figures/mutation/WES_muts_vs_exp_', version_to_use, '.rds'))
+ggsave(muts_vs_exp, filename = paste0('figures/mutation/WES_muts_vs_exp_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+### MutSig2CV mutation rate vs expression outliers
+
+```{r include=TRUE, eval=MutSig2CV_output_exists}
+muts_vs_exp <- ggplot(for_plot_count_mutations_deps_2 %>% dplyr::filter(!is.na(expression_outliers) & !is.na(rate_tot)), 
+                       aes((rate_tot*10^6), expression_outliers, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_x_log10(breaks = c(1, 10, 100, 1000), limits = c(1, 3000)) +
+  theme_bw() +
+  xlab('MutSig2CV mutations per MB') + ylab('Number of expression outliers') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x") 
+
+muts_vs_exp
+
+saveRDS(muts_vs_exp, file = paste0('figures/mutation/mutsig_v_exp_', version_to_use, '.rds'))
+ggsave(muts_vs_exp, filename = paste0('figures/mutation/mutsig_v_exp_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+
+### Estimating false positive rate {.tabset .tabset-fade}
+
+```{r}
+gene_expression_longer <- pivot_longer(as.data.frame(gene_expression) %>% dplyr::mutate(DepMap_ID = rownames(gene_expression)), -DepMap_ID)
+gene_dependency_longer <- pivot_longer(as.data.frame(gene_dependency) %>% dplyr::mutate(DepMap_ID = rownames(gene_dependency)), -DepMap_ID)
+```
+
+```{r}
+data_for_table <- NULL
+
+gene_expression_longer_0 <- left_join(gene_expression_longer %>% dplyr::filter(value == 0), 
+                                      gene_dependency_longer, by = c("DepMap_ID", "name"), suffix = c(".exp", ".dep")) %>%
+  dplyr::filter(!is.na(value.dep), !is.na(value.exp))
+
+num_not_expressed <- dim(gene_expression_longer_0)[1]
+num_not_expressed_deps <- dim(gene_expression_longer_0 %>% dplyr::filter(value.dep > 0.5))[1]
+
+data_for_table <- rbind(data_for_table, c("0", "all genes", num_not_expressed, num_not_expressed_deps, num_not_expressed_deps/num_not_expressed))
+
+gene_expression_longer_0.5 <- left_join(gene_expression_longer %>% dplyr::filter(value < 0.5), 
+                                      gene_dependency_longer, by = c("DepMap_ID", "name"), suffix = c(".exp", ".dep")) %>%
+  dplyr::filter(!is.na(value.dep), !is.na(value.exp))
+
+num_not_expressed <- dim(gene_expression_longer_0.5)[1]
+num_not_expressed_deps <- dim(gene_expression_longer_0.5 %>% dplyr::filter(value.dep > 0.5))[1]
+
+data_for_table <- rbind(data_for_table, c("0.5", "all genes", num_not_expressed, num_not_expressed_deps, num_not_expressed_deps/num_not_expressed))
+
+gene_expression_longer_1 <- left_join(gene_expression_longer %>% dplyr::filter(value < 1), 
+                                      gene_dependency_longer, by = c("DepMap_ID", "name"), suffix = c(".exp", ".dep")) %>%
+  dplyr::filter(!is.na(value.dep), !is.na(value.exp))
+
+num_not_expressed <- dim(gene_expression_longer_1)[1]
+num_not_expressed_deps <- dim(gene_expression_longer_1 %>% dplyr::filter(value.dep > 0.5))[1]
+
+data_for_table <- rbind(data_for_table, c("1", "all genes", num_not_expressed, num_not_expressed_deps, num_not_expressed_deps/num_not_expressed))
+
+num_not_expressed <- dim(gene_expression_longer_0 %>% dplyr::filter(name %in% lrt_genes_ceres))[1]
+num_not_expressed_deps <- dim(gene_expression_longer_0 %>% dplyr::filter(name %in% lrt_genes_ceres) %>% dplyr::filter(value.dep > 0.5))[1]
+
+data_for_table <- rbind(data_for_table, c("0", "selective dependencies", 
+                                          num_not_expressed, num_not_expressed_deps, num_not_expressed_deps/num_not_expressed))
+
+num_not_expressed <- dim(gene_expression_longer_0.5 %>% dplyr::filter(name %in% lrt_genes_ceres))[1]
+num_not_expressed_deps <- dim(gene_expression_longer_0.5 %>% dplyr::filter(name %in% lrt_genes_ceres) %>% dplyr::filter(value.dep > 0.5))[1]
+
+data_for_table <- rbind(data_for_table, c("0.5", "selective dependencies", 
+                                          num_not_expressed, num_not_expressed_deps, num_not_expressed_deps/num_not_expressed))
+
+num_not_expressed <- dim(gene_expression_longer_1 %>% dplyr::filter(name %in% lrt_genes_ceres))[1]
+num_not_expressed_deps <- dim(gene_expression_longer_1 %>% dplyr::filter(name %in% lrt_genes_ceres) %>% dplyr::filter(value.dep > 0.5))[1]
+
+data_for_table <- rbind(data_for_table, c("1", "selective dependencies", 
+                                          num_not_expressed, num_not_expressed_deps, num_not_expressed_deps/num_not_expressed))
+
+colnames(data_for_table) <- c("TPM cutoff", "Dependency subset", "# not expressed", "# dependent", "False positive rate estimate")
+
+```
+
+```{r include=TRUE} 
+data_for_table %>% datatable(options=list(scrollX=T))
+```
+
+#### Non-expressed genes (TPM=0) with dep >0.5 per cell line
+
+```{r}
+cell_line_FDR_est <- gene_expression_longer_0 %>% 
+  dplyr::count(DepMap_ID, value.dep > 0.5) %>%
+  tidyr::pivot_wider(names_from = `value.dep > 0.5`, values_from = n) %>%
+  dplyr::mutate(`FALSE` = `FALSE` + `TRUE`) %>%
+  dplyr::rename(`non_expressed` = `FALSE`,
+                `non_expressed_deps` = `TRUE`) %>%
+  dplyr::mutate(FDR = non_expressed_deps / non_expressed) 
+
+cell_line_FDR_est %>% datatable(options=list(scrollX=T))
+
+for_plot_count_mutations_deps_2 <- left_join(for_plot_count_mutations_deps, cell_line_FDR_est, by = "DepMap_ID")
+
+deps_vs_FDR <- ggplot(for_plot_count_mutations_deps_2 %>% dplyr::filter(!is.na(total_deps_by_cl_lrt_only), !is.na(FDR)), 
+                       aes(total_deps_by_cl_lrt_only, FDR, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  theme_bw() +
+  xlab('Number of selective dependencies') + ylab('Estimated false positive rate') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+deps_vs_FDR
+
+saveRDS(deps_vs_FDR, file = paste0('figures/mutation/deps_v_FDR_TPM0_', version_to_use, '.rds'))
+ggsave(deps_vs_FDR, filename = paste0('figures/mutation/deps_v_FDR_TPM0_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+NNMD_vs_FDR <- ggplot(for_plot_count_mutations_deps_2 %>% dplyr::filter(!is.na(cell_line_NNMD), !is.na(FDR)), 
+                       aes(cell_line_NNMD, FDR, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  theme_bw() +
+  xlab('Cell line NNMD') + ylab('Estimated false positive rate') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+NNMD_vs_FDR
+
+saveRDS(NNMD_vs_FDR, file = paste0('figures/mutation/NNMD_v_FDR_TPM0_', version_to_use, '.rds'))
+ggsave(NNMD_vs_FDR, filename = paste0('figures/mutation/NNMD_v_FDR_TPM0_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+Cas9_vs_FDR <- ggplot(for_plot_count_mutations_deps_2 %>% dplyr::filter(!is.na(CAS9), !is.na(FDR)), 
+                       aes(CAS9, FDR, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  theme_bw() +
+  xlab('% GFP remaining (1 - Cas9 activity)') + ylab('Estimated false positive rate') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+Cas9_vs_FDR
+
+saveRDS(Cas9_vs_FDR, file = paste0('figures/mutation/Cas9_v_FDR_TPM0_', version_to_use, '.rds'))
+ggsave(Cas9_vs_FDR, filename = paste0('figures/mutation/Cas9_v_FDR_TPM0_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+#### Non-expressed genes (TPM<0.5) with dep >0.5 per cell line
+
+```{r}
+cell_line_FDR_est <- gene_expression_longer_0.5 %>% 
+  dplyr::count(DepMap_ID, value.dep > 0.5) %>%
+  tidyr::pivot_wider(names_from = `value.dep > 0.5`, values_from = n) %>%
+  dplyr::mutate(`FALSE` = `FALSE` + `TRUE`) %>%
+  dplyr::rename(`non_expressed` = `FALSE`,
+                `non_expressed_deps` = `TRUE`) %>%
+  dplyr::mutate(FDR = non_expressed_deps / non_expressed) 
+
+cell_line_FDR_est %>% datatable(options=list(scrollX=T))
+
+for_plot_count_mutations_deps_2 <- left_join(for_plot_count_mutations_deps, cell_line_FDR_est, by = "DepMap_ID")
+
+deps_vs_FDR <- ggplot(for_plot_count_mutations_deps_2 %>% dplyr::filter(!is.na(total_deps_by_cl_lrt_only), !is.na(FDR)), 
+                       aes(total_deps_by_cl_lrt_only, FDR, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  theme_bw() +
+  xlab('Number of selective dependencies') + ylab('Estimated false positive rate') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+deps_vs_FDR
+
+saveRDS(deps_vs_FDR, file = paste0('figures/mutation/deps_v_FDR_TPM0.5_', version_to_use, '.rds'))
+ggsave(deps_vs_FDR, filename = paste0('figures/mutation/deps_v_FDR_TPM0.5_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+NNMD_vs_FDR <- ggplot(for_plot_count_mutations_deps_2 %>% dplyr::filter(!is.na(cell_line_NNMD), !is.na(FDR)), 
+                       aes(cell_line_NNMD, FDR, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  theme_bw() +
+  xlab('Cell line NNMD') + ylab('Estimated false positive rate') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+NNMD_vs_FDR
+
+saveRDS(NNMD_vs_FDR, file = paste0('figures/mutation/NNMD_v_FDR_TPM0.5_', version_to_use, '.rds'))
+ggsave(NNMD_vs_FDR, filename = paste0('figures/mutation/NNMD_v_FDR_TPM0.5_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+Cas9_vs_FDR <- ggplot(for_plot_count_mutations_deps_2 %>% dplyr::filter(!is.na(CAS9), !is.na(FDR)), 
+                       aes(CAS9, FDR, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  theme_bw() +
+  xlab('% GFP remaining (1 - Cas9 activity)') + ylab('Estimated false positive rate') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+Cas9_vs_FDR
+
+saveRDS(Cas9_vs_FDR, file = paste0('figures/mutation/Cas9_v_FDR_TPM0.5_', version_to_use, '.rds'))
+ggsave(Cas9_vs_FDR, filename = paste0('figures/mutation/Cas9_v_FDR_TPM0.5_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+#### Non-expressed genes (TPM<1) with dep >0.5 per cell line
+
+```{r}
+cell_line_FDR_est <- gene_expression_longer_1 %>% 
+  dplyr::count(DepMap_ID, value.dep > 0.5) %>%
+  tidyr::pivot_wider(names_from = `value.dep > 0.5`, values_from = n) %>%
+  dplyr::mutate(`FALSE` = `FALSE` + `TRUE`) %>%
+  dplyr::rename(`non_expressed` = `FALSE`,
+                `non_expressed_deps` = `TRUE`) %>%
+  dplyr::mutate(FDR = non_expressed_deps / non_expressed) 
+
+cell_line_FDR_est %>% datatable(options=list(scrollX=T))
+
+for_plot_count_mutations_deps_2 <- left_join(for_plot_count_mutations_deps, cell_line_FDR_est, by = "DepMap_ID")
+
+deps_vs_FDR <- ggplot(for_plot_count_mutations_deps_2 %>% dplyr::filter(!is.na(total_deps_by_cl_lrt_only), !is.na(FDR)), 
+                       aes(total_deps_by_cl_lrt_only, FDR, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  theme_bw() +
+  xlab('Number of selective dependencies') + ylab('Estimated false positive rate') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+deps_vs_FDR
+
+saveRDS(deps_vs_FDR, file = paste0('figures/mutation/deps_v_FDR_TPM1_', version_to_use, '.rds'))
+ggsave(deps_vs_FDR, filename = paste0('figures/mutation/deps_v_FDR_TPM1_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+NNMD_vs_FDR <- ggplot(for_plot_count_mutations_deps_2 %>% dplyr::filter(!is.na(cell_line_NNMD), !is.na(FDR)), 
+                       aes(cell_line_NNMD, FDR, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  theme_bw() +
+  xlab('Cell line NNMD') + ylab('Estimated false positive rate') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+NNMD_vs_FDR
+
+saveRDS(NNMD_vs_FDR, file = paste0('figures/mutation/NNMD_v_FDR_TPM1_', version_to_use, '.rds'))
+ggsave(NNMD_vs_FDR, filename = paste0('figures/mutation/NNMD_v_FDR_TPM1_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+
+Cas9_vs_FDR <- ggplot(for_plot_count_mutations_deps_2 %>% dplyr::filter(!is.na(CAS9), !is.na(FDR)), 
+                       aes(CAS9, FDR, fill=Group, color=Group)) +
+  geom_point(pch=21, alpha=0.75, size=3) +
+  scale_fill_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  scale_color_manual(values=c(color_for_subtypes_vector, 'Adult'='grey', 'Fibroblast'='grey')) +
+  theme_bw() +
+  xlab('% GFP remaining (1 - Cas9 activity)') + ylab('Estimated false positive rate') +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position='none',  
+        panel.border = element_blank(), panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) +
+  stat_smooth(aes(fill=NULL, color=NULL), method = "lm", formula = "y ~ x")
+
+Cas9_vs_FDR
+
+saveRDS(Cas9_vs_FDR, file = paste0('figures/mutation/Cas9_v_FDR_TPM1_', version_to_use, '.rds'))
+ggsave(Cas9_vs_FDR, filename = paste0('figures/mutation/Cas9_v_FDR_TPM1_', version_to_use, '.pdf'), 
+       height = 14, width=15, units='cm', device='pdf', useDingbats=FALSE)
+```
+
+## Session Info
+
+```{r session_info, include=TRUE, echo=TRUE, results='markup'}
+devtools::session_info()
+```
+
+```{r include=TRUE}
+as.data.frame(`Dataset Used`) %>% datatable(options=list(scrollX=T))
+```
+
